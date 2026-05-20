@@ -106,7 +106,7 @@ export default function Dashboard() {
             transacoesFinais.push({
               id: `rec-${rec.id}-${refMes}`,
               valor: rec.valor,
-              tipo: "saida", 
+              tipo: rec.tipoTransacao || "saida", 
               categoria: rec.categoria,
               referencia: refMes,
               descricao: rec.descricao
@@ -126,6 +126,8 @@ export default function Dashboard() {
     const prevRef = `${dataAnterior.getFullYear()}-${String(dataAnterior.getMonth() + 1).padStart(2, "0")}`;
 
     let receitasMes = 0; let despesasMes = 0; let despesasMesAnterior = 0;
+    // NOVO: Fluxo exclusivo para resgates e investimentos de Metas
+    let fluxoMetasMes = 0; 
     let maiorDespesa = { descricao: "Nenhuma", valor: 0 };
     const categoriasMes = {};
     const historicoPorMes = {};
@@ -134,21 +136,39 @@ export default function Dashboard() {
       if (!historicoPorMes[t.referencia]) {
         historicoPorMes[t.referencia] = { name: t.referencia, receitas: 0, despesas: 0, saldo: 0 };
       }
-      if (t.tipo === "entrada") historicoPorMes[t.referencia].receitas += t.valor;
-      if (t.tipo === "saida") historicoPorMes[t.referencia].despesas += t.valor;
-      historicoPorMes[t.referencia].saldo = historicoPorMes[t.referencia].receitas - historicoPorMes[t.referencia].despesas;
 
+      // NOVO: Identifica se é uma movimentação de meta
+      const isMeta = t.categoria === "Metas" || t.descricao.includes("Resgate:") || t.descricao.includes("Investimento:");
+
+      // GRÁFICO: Se for meta, não entra nas barras, mas altera a linha de saldo!
+      if (t.tipo === "entrada") {
+        if (!isMeta) historicoPorMes[t.referencia].receitas += t.valor;
+        historicoPorMes[t.referencia].saldo += t.valor; 
+      }
+      if (t.tipo === "saida") {
+        if (!isMeta) historicoPorMes[t.referencia].despesas += t.valor;
+        historicoPorMes[t.referencia].saldo -= t.valor;
+      }
+
+      // CARDS DO MÊS ATUAL
       if (t.referencia === currentRef) {
-        if (t.tipo === "entrada") receitasMes += t.valor;
+        if (t.tipo === "entrada") {
+          if (!isMeta) receitasMes += t.valor;
+          else fluxoMetasMes += t.valor; // É um resgate (+)
+        }
         if (t.tipo === "saida") {
-          despesasMes += t.valor;
-          if (t.valor > maiorDespesa.valor) maiorDespesa = { descricao: t.descricao, valor: t.valor };
-          categoriasMes[t.categoria] = (categoriasMes[t.categoria] || 0) + t.valor;
+          if (!isMeta) {
+            despesasMes += t.valor;
+            if (t.valor > maiorDespesa.valor) maiorDespesa = { descricao: t.descricao, valor: t.valor };
+            categoriasMes[t.categoria] = (categoriasMes[t.categoria] || 0) + t.valor;
+          } else {
+            fluxoMetasMes -= t.valor; // É um investimento (-)
+          }
         }
       }
 
       if (t.referencia === prevRef) {
-        if (t.tipo === "saida") despesasMesAnterior += t.valor;
+        if (t.tipo === "saida" && !isMeta) despesasMesAnterior += t.valor;
       }
     });
 
@@ -157,15 +177,17 @@ export default function Dashboard() {
       if (val > maiorCategoria.valor) maiorCategoria = { nome: cat, valor: val };
     }
 
-    const saldoMes = receitasMes - despesasMes;
+    // NOVO: O Saldo do Mês agora junta as receitas reais, despesas reais e as transferências de Metas
+    const saldoMes = receitasMes - despesasMes + fluxoMetasMes;
+    
     const recomendadoGuardar = saldoMes > 0 ? saldoMes * (reservaPercentual / 100) : 0;
 
-    // NOVO: Cálculo da variação de despesas
     let variacaoDespesas = 0;
     if (despesasMesAnterior > 0) {
       variacaoDespesas = ((despesasMes - despesasMesAnterior) / despesasMesAnterior) * 100;
     }
 
+    // SAÚDE FINANCEIRA: Baseada na receita REAL vs despesa REAL
     let saudeScore = 0;
     if (receitasMes > 0) {
       const gastoPercentual = (despesasMes / receitasMes) * 100;
@@ -248,7 +270,6 @@ export default function Dashboard() {
               <p className="text-3xl font-bold text-green-600 break-words">{formatCurrency(metrics.receitasMes)}</p>
             </div>
 
-            {/* CARD ATUALIZADO: Despesas agora inclui a % de Variação Novamente */}
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
               <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Despesas</h3>
               <div className="flex flex-col xl:flex-row xl:items-baseline gap-2">
@@ -323,9 +344,9 @@ export default function Dashboard() {
                     <YAxis stroke="#6b7280" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(val) => `R$ ${val}`} />
                     <Tooltip formatter={(value) => formatCurrency(value)} contentStyle={{ borderRadius: '0.5rem', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
                     <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
-                    <Bar dataKey="receitas" name="Receitas" fill="#22c55e" radius={[4, 4, 0, 0]} maxBarSize={40} />
-                    <Bar dataKey="despesas" name="Despesas" fill="#ef4444" radius={[4, 4, 0, 0]} maxBarSize={40} />
-                    <Line type="monotone" dataKey="saldo" name="Saldo Final (Tendência)" stroke="#1e3a8a" strokeWidth={3} dot={{ r: 4, strokeWidth: 2 }} activeDot={{ r: 6 }} />
+                    <Bar dataKey="receitas" name="Receitas (Reais)" fill="#22c55e" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                    <Bar dataKey="despesas" name="Despesas (Reais)" fill="#ef4444" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                    <Line type="monotone" dataKey="saldo" name="Saldo Disponível" stroke="#1e3a8a" strokeWidth={3} dot={{ r: 4, strokeWidth: 2 }} activeDot={{ r: 6 }} />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>

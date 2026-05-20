@@ -1,5 +1,5 @@
 // src/pages/Lancamentos.jsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import Sidebar from "../components/Sidebar";
 import { db } from "../config/firebase";
@@ -7,8 +7,8 @@ import {
   collection, query, where, getDocs, 
   addDoc, updateDoc, deleteDoc, doc 
 } from "firebase/firestore";
+import toast from "react-hot-toast"; // NOVO: Importação do Toast
 
-// Lista de categorias padrão para todos os usuários
 const CATEGORIAS_PADRAO = [
   "Alimentação",
   "Educação",
@@ -32,8 +32,15 @@ export default function Lancamentos() {
     return `${dataAtual.getFullYear()}-${String(dataAtual.getMonth() + 1).padStart(2, "0")}`;
   });
 
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterType, setFilterType] = useState("all");
+  const [filterCategory, setFilterCategory] = useState("all");
+
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  
+  // NOVO: Estado para o Modal de Exclusão
+  const [itemToDelete, setItemToDelete] = useState(null);
   
   const [formData, setFormData] = useState({
     descricao: "",
@@ -104,7 +111,7 @@ export default function Lancamentos() {
             id: `rec-${doc.id}`, 
             descricao: item.descricao,
             valor: item.valor,
-            tipo: "saida", 
+            tipo: item.tipoTransacao || "saida", 
             categoria: item.categoria,
             isRecorrente: true, 
             criadoEm: item.criadoEm || Date.now()
@@ -116,7 +123,7 @@ export default function Lancamentos() {
               id: `rec-${doc.id}`,
               descricao: `${item.descricao} (${parcelaDesteMes}/${item.parcelasTotais})`,
               valor: item.valor,
-              tipo: "saida",
+              tipo: item.tipoTransacao || "saida",
               categoria: item.categoria,
               isRecorrente: true,
               criadoEm: item.criadoEm || Date.now()
@@ -129,6 +136,7 @@ export default function Lancamentos() {
       setTransacoes(dados);
     } catch (error) {
       console.error("Erro ao buscar transações:", error);
+      toast.error("Falha ao carregar os lançamentos.");
     } finally {
       setLoading(false);
     }
@@ -139,6 +147,18 @@ export default function Lancamentos() {
     fetchTransacoes();
     setFormData(prev => ({ ...prev, referencia: selectedMonth }));
   }, [user, selectedMonth]);
+
+  const filteredTransacoes = useMemo(() => {
+    return transacoes.filter((t) => {
+      const matchesSearch = 
+        t.descricao.toLowerCase().includes(searchTerm.toLowerCase()) || 
+        t.categoria.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesType = filterType === "all" || t.tipo === filterType;
+      const matchesCategory = filterCategory === "all" || t.categoria.toLowerCase() === filterCategory.toLowerCase();
+
+      return matchesSearch && matchesType && matchesCategory;
+    });
+  }, [transacoes, searchTerm, filterType, filterCategory]);
 
   const handleOpenAdd = () => {
     setFormData({ descricao: "", valor: "", tipo: "saida", categoria: "", pago: false, referencia: selectedMonth });
@@ -170,27 +190,38 @@ export default function Lancamentos() {
 
       if (editingId) {
         await updateDoc(doc(db, "financas", editingId), dataToSave);
+        toast.success("Lançamento atualizado!"); // NOVO
       } else {
         dataToSave.criadoEm = Date.now();
         await addDoc(collection(db, "financas"), dataToSave);
+        toast.success("Lançamento adicionado!"); // NOVO
       }
       
       setIsModalOpen(false);
       fetchTransacoes();
     } catch (error) {
       console.error("Erro ao salvar:", error);
-      alert("Erro ao salvar o lançamento.");
+      toast.error("Erro ao salvar o lançamento."); // NOVO
     }
   };
 
-  const handleDelete = async (id) => {
-    if (window.confirm("Tem certeza que deseja excluir este lançamento?")) {
-      try {
-        await deleteDoc(doc(db, "financas", id));
-        fetchTransacoes();
-      } catch (error) {
-        console.error("Erro ao deletar:", error);
-      }
+  // NOVO: Função que abre o modal de exclusão
+  const confirmDelete = (id) => {
+    setItemToDelete(id);
+  };
+
+  // NOVO: Função que efetivamente deleta (chamada pelo modal de exclusão)
+  const executeDelete = async () => {
+    if (!itemToDelete) return;
+    try {
+      await deleteDoc(doc(db, "financas", itemToDelete));
+      toast.success("Lançamento excluído!");
+      fetchTransacoes();
+    } catch (error) {
+      console.error("Erro ao deletar:", error);
+      toast.error("Erro ao excluir o lançamento.");
+    } finally {
+      setItemToDelete(null); // Fecha o modal
     }
   };
 
@@ -198,9 +229,11 @@ export default function Lancamentos() {
     try {
       setTransacoes(transacoes.map(t => t.id === id ? { ...t, pago: !currentStatus } : t));
       await updateDoc(doc(db, "financas", id), { pago: !currentStatus });
+      toast.success(currentStatus ? "Marcado como pendente." : "Marcado como pago!"); // NOVO
     } catch (error) {
       console.error("Erro ao atualizar status:", error);
       fetchTransacoes();
+      toast.error("Falha ao alterar o status."); // NOVO
     }
   };
 
@@ -243,6 +276,51 @@ export default function Lancamentos() {
             </div>
           </header>
 
+          <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-200 flex flex-col md:flex-row gap-4 items-center">
+            
+            <div className="relative w-full md:flex-1">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+              </div>
+              <input 
+                type="text" 
+                placeholder="Pesquisar lançamento..." 
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+              />
+            </div>
+
+            <div className="flex flex-col sm:flex-row w-full md:w-auto gap-4">
+              <select 
+                value={filterType} 
+                onChange={(e) => setFilterType(e.target.value)}
+                className="w-full sm:w-40 px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm font-medium"
+              >
+                <option value="all">Todos os Tipos</option>
+                <option value="entrada">Receitas</option>
+                <option value="saida">Despesas</option>
+              </select>
+
+              <select 
+                value={filterCategory} 
+                onChange={(e) => setFilterCategory(e.target.value)}
+                className="w-full sm:w-48 px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm font-medium capitalize"
+              >
+                <option value="all">Todas Categorias</option>
+                <optgroup label="Básicas">
+                  {CATEGORIAS_PADRAO.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                </optgroup>
+                {categoriasPersonalizadas.length > 0 && (
+                  <optgroup label="Minhas Categorias">
+                    {categoriasPersonalizadas.map((cat, idx) => <option key={`f-cat-${idx}`} value={cat}>{cat}</option>)}
+                  </optgroup>
+                )}
+              </select>
+            </div>
+
+          </div>
+
           <div className="bg-white md:rounded-2xl shadow-sm border border-gray-200 overflow-hidden md:bg-white bg-transparent md:border-solid border-none md:shadow-sm shadow-none">
             {loading ? (
               <div className="p-10 text-center text-gray-500 bg-white rounded-2xl">Carregando dados...</div>
@@ -253,6 +331,16 @@ export default function Lancamentos() {
                  </div>
                  <p className="text-gray-500 font-medium">Nenhum lançamento encontrado em {selectedMonth}.</p>
                  <button onClick={handleOpenAdd} className="mt-4 text-blue-600 font-semibold hover:underline">Adicionar o primeiro</button>
+              </div>
+            ) : filteredTransacoes.length === 0 ? (
+              <div className="p-16 text-center flex flex-col items-center justify-center bg-white rounded-2xl">
+                 <p className="text-gray-500 font-medium">Nenhum lançamento encontrado com os filtros atuais.</p>
+                 <button 
+                   onClick={() => { setSearchTerm(""); setFilterType("all"); setFilterCategory("all"); }} 
+                   className="mt-4 text-blue-600 font-semibold hover:underline"
+                 >
+                   Limpar Filtros
+                 </button>
               </div>
             ) : (
               <>
@@ -269,7 +357,7 @@ export default function Lancamentos() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100 text-sm">
-                      {transacoes.map((t) => (
+                      {filteredTransacoes.map((t) => (
                         <tr key={t.id} className="hover:bg-gray-50/50 transition-colors">
                           <td className="p-4">
                             <p className="font-bold text-gray-900 capitalize flex items-center gap-2">
@@ -321,7 +409,8 @@ export default function Lancamentos() {
                                 <button onClick={() => handleOpenEdit(t)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Editar">
                                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
                                 </button>
-                                <button onClick={() => handleDelete(t.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Excluir">
+                                {/* NOVO: Chama a função confirmDelete em vez do delete direto */}
+                                <button onClick={() => confirmDelete(t.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Excluir">
                                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                                 </button>
                               </div>
@@ -335,10 +424,8 @@ export default function Lancamentos() {
 
                 {/* --- LAYOUT MOBILE (Cards) --- */}
                 <div className="md:hidden flex flex-col gap-3 pb-4">
-                  {transacoes.map((t) => (
+                  {filteredTransacoes.map((t) => (
                     <div key={t.id} className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm flex flex-col gap-3">
-                      
-                      {/* Linha 1: Info e Valor */}
                       <div className="flex justify-between items-start gap-2">
                         <div className="flex-1">
                           <p className="font-bold text-gray-900 capitalize flex flex-wrap items-center gap-2 text-base leading-tight">
@@ -359,7 +446,6 @@ export default function Lancamentos() {
                         </div>
                       </div>
                       
-                      {/* Linha 2: Status e Ações */}
                       <div className="flex items-center justify-between pt-3 border-t border-gray-100 mt-1">
                         <div>
                           {t.isRecorrente ? (
@@ -393,14 +479,14 @@ export default function Lancamentos() {
                               <button onClick={() => handleOpenEdit(t)} className="p-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors" title="Editar">
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
                               </button>
-                              <button onClick={() => handleDelete(t.id)} className="p-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors" title="Excluir">
+                              {/* NOVO: Chama a função confirmDelete em vez do delete direto */}
+                              <button onClick={() => confirmDelete(t.id)} className="p-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors" title="Excluir">
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                               </button>
                             </div>
                           )}
                         </div>
                       </div>
-
                     </div>
                   ))}
                 </div>
@@ -509,6 +595,41 @@ export default function Lancamentos() {
               </div>
 
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* NOVO: MODAL DE CONFIRMAÇÃO DE EXCLUSÃO */}
+      {itemToDelete && (
+        <div className="fixed inset-0 bg-gray-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden transform transition-all p-6 text-center">
+            
+            <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4 text-red-600 border border-red-100">
+              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            
+            <h3 className="text-xl font-bold text-gray-900 mb-2">Excluir Lançamento?</h3>
+            <p className="text-gray-500 text-sm mb-6">
+              Essa ação não pode ser desfeita. Tem certeza que deseja remover este item do seu orçamento?
+            </p>
+            
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setItemToDelete(null)} 
+                className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-all"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={executeDelete} 
+                className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-lg transition-all"
+              >
+                Sim, excluir
+              </button>
+            </div>
+
           </div>
         </div>
       )}

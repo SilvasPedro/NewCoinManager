@@ -7,6 +7,7 @@ import {
   collection, query, where, getDocs, 
   addDoc, updateDoc, deleteDoc, doc, writeBatch 
 } from "firebase/firestore";
+import toast from "react-hot-toast"; // NOVO: Importação do Toast
 
 export default function Recorrencias() {
   const { user } = useAuth();
@@ -15,15 +16,19 @@ export default function Recorrencias() {
   const [recorrencias, setRecorrencias] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Controle do Modal
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  
+  // NOVO: Estados para os Modais de Exclusão
+  const [itemToDelete, setItemToDelete] = useState(null);
+  const [isDeleteAllModalOpen, setIsDeleteAllModalOpen] = useState(false);
   
   const [formData, setFormData] = useState({
     descricao: "",
     valor: "",
     categoria: "",
     tipo: "fixa",
+    tipoTransacao: "saida",
     parcelaAtual: 1,
     parcelasTotais: 2,
     dataInicio: ""
@@ -47,6 +52,7 @@ export default function Recorrencias() {
       setRecorrencias(dados);
     } catch (error) {
       console.error("Erro ao buscar recorrências:", error);
+      toast.error("Falha ao carregar recorrências."); // NOVO
     } finally {
       setLoading(false);
     }
@@ -56,44 +62,41 @@ export default function Recorrencias() {
     fetchRecorrencias();
   }, [user]);
 
-  // CORREÇÃO: Cálculos matemáticos precisos
   const metrics = useMemo(() => {
+    let receitasMensais = 0;
     let custoFixoMensal = 0;
     let custoParceladoMensal = 0;
     let dividaTotalRestante = 0;
 
     recorrencias.forEach(item => {
-      if (item.tipo === "fixa") {
-        custoFixoMensal += item.valor;
-      } else if (item.tipo === "parcelada") {
-        custoParceladoMensal += item.valor;
-        
-        // CORREÇÃO: Calcula apenas as que faltam baseado no que o usuário digitou (Total - Atual)
-        const parcelasRestantes = item.parcelasTotais - item.parcelaAtual;
-        if (parcelasRestantes > 0) {
-          dividaTotalRestante += (parcelasRestantes * item.valor);
+      if (item.tipoTransacao === "entrada") {
+        receitasMensais += item.valor;
+      } else {
+        if (item.tipo === "fixa") {
+          custoFixoMensal += item.valor;
+        } else if (item.tipo === "parcelada") {
+          custoParceladoMensal += item.valor;
+          const parcelasRestantes = item.parcelasTotais - item.parcelaAtual;
+          if (parcelasRestantes > 0) {
+            dividaTotalRestante += (parcelasRestantes * item.valor);
+          }
         }
       }
     });
 
-    return { custoFixoMensal, custoParceladoMensal, dividaTotalRestante };
+    return { receitasMensais, custoFixoMensal, custoParceladoMensal, dividaTotalRestante };
   }, [recorrencias]);
 
-  // CORREÇÃO: A previsão do fim agora usa as parcelas que faltam a partir do mês atual indicado
   const calcularPrevisaoFim = (dataInicio, parcelaAtual, parcelasTotais) => {
     if (!dataInicio) return "Desconhecido";
     const [ano, mes] = dataInicio.split("-").map(Number);
     const mesesRestantes = parcelasTotais - parcelaAtual;
-    
-    // Soma apenas os meses restantes ao mês indicado
     const dataFim = new Date(ano, (mes - 1) + mesesRestantes, 1);
-    
-    // Devolve formatado (Ex: mai. de 2028)
     return dataFim.toLocaleDateString('pt-BR', { month: 'short', year: 'numeric' });
   };
 
   const handleOpenAdd = () => {
-    setFormData({ descricao: "", valor: "", categoria: "", tipo: "fixa", parcelaAtual: 1, parcelasTotais: 2, dataInicio: "" });
+    setFormData({ descricao: "", valor: "", categoria: "", tipo: "fixa", tipoTransacao: "saida", parcelaAtual: 1, parcelasTotais: 2, dataInicio: "" });
     setEditingId(null);
     setIsModalOpen(true);
   };
@@ -104,6 +107,7 @@ export default function Recorrencias() {
       valor: item.valor,
       categoria: item.categoria,
       tipo: item.tipo,
+      tipoTransacao: item.tipoTransacao || "saida",
       parcelaAtual: item.parcelaAtual || 1,
       parcelasTotais: item.parcelasTotais || 2,
       dataInicio: item.dataInicio || ""
@@ -127,40 +131,62 @@ export default function Recorrencias() {
 
       if (editingId) {
         await updateDoc(doc(db, "recorrencias", editingId), dataToSave);
+        toast.success("Recorrência atualizada!"); // NOVO
       } else {
         await addDoc(collection(db, "recorrencias"), dataToSave);
+        toast.success("Nova recorrência criada!"); // NOVO
       }
       
       setIsModalOpen(false);
       fetchRecorrencias();
     } catch (error) {
       console.error("Erro ao salvar:", error);
+      toast.error("Erro ao salvar os dados."); // NOVO
     }
   };
 
-  const handleDelete = async (id) => {
-    if (window.confirm("Deseja excluir esta recorrência?")) {
-      await deleteDoc(doc(db, "recorrencias", id));
+  // NOVO: Funções de Exclusão Individual
+  const confirmDelete = (id) => {
+    setItemToDelete(id);
+  };
+
+  const executeDelete = async () => {
+    if (!itemToDelete) return;
+    try {
+      await deleteDoc(doc(db, "recorrencias", itemToDelete));
+      toast.success("Recorrência excluída!");
       fetchRecorrencias();
+    } catch (error) {
+      console.error("Erro ao deletar:", error);
+      toast.error("Erro ao excluir o item.");
+    } finally {
+      setItemToDelete(null);
     }
   };
 
-  const handleDeleteAll = async () => {
+  // NOVO: Funções de Excluir Tudo
+  const confirmDeleteAll = () => {
     if (recorrencias.length === 0) return;
-    if (window.confirm("ATENÇÃO: Tem certeza que deseja apagar TODAS as recorrências de uma vez? Essa ação não pode ser desfeita.")) {
-      try {
-        setLoading(true);
-        const batch = writeBatch(db);
-        recorrencias.forEach((item) => {
-          const docRef = doc(db, "recorrencias", item.id);
-          batch.delete(docRef);
-        });
-        await batch.commit();
-        fetchRecorrencias();
-      } catch (error) {
-        console.error("Erro ao apagar tudo:", error);
-        setLoading(false);
-      }
+    setIsDeleteAllModalOpen(true);
+  };
+
+  const executeDeleteAll = async () => {
+    try {
+      setLoading(true);
+      const batch = writeBatch(db);
+      recorrencias.forEach((item) => {
+        const docRef = doc(db, "recorrencias", item.id);
+        batch.delete(docRef);
+      });
+      await batch.commit();
+      toast.success("Todas as recorrências foram apagadas!");
+      fetchRecorrencias();
+    } catch (error) {
+      console.error("Erro ao apagar tudo:", error);
+      toast.error("Erro ao tentar limpar a lista.");
+      setLoading(false);
+    } finally {
+      setIsDeleteAllModalOpen(false);
     }
   };
 
@@ -178,24 +204,28 @@ export default function Recorrencias() {
               </button>
               <div>
                 <h2 className="text-2xl md:text-3xl font-extrabold text-gray-900 tracking-tight">Recorrências</h2>
-                <p className="text-gray-500 mt-1 text-sm">Gerencie contas fixas e pagamentos parcelados.</p>
+                <p className="text-gray-500 mt-1 text-sm">Gerencie ganhos e contas recorrentes.</p>
               </div>
             </div>
 
             <div className="flex items-center gap-3">
-              <button onClick={handleDeleteAll} disabled={recorrencias.length === 0} className="px-4 py-2.5 bg-red-50 text-red-600 hover:bg-red-100 font-bold rounded-xl transition-colors disabled:opacity-50">
+              <button onClick={confirmDeleteAll} disabled={recorrencias.length === 0} className="px-4 py-2.5 bg-red-50 text-red-600 hover:bg-red-100 font-bold rounded-xl transition-colors disabled:opacity-50 hidden sm:block">
                 Apagar Tudo
               </button>
               <button onClick={handleOpenAdd} className="flex items-center justify-center gap-2 px-5 py-2.5 bg-blue-950 hover:bg-black text-white font-semibold rounded-xl transition-all shadow-md">
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/></svg>
-                Nova Conta
+                Nova Recorrência
               </button>
             </div>
           </header>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
-              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Custos Fixos Mensais</h3>
+              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Receitas (Mês)</h3>
+              <p className="text-3xl font-bold text-green-600">{formatCurrency(metrics.receitasMensais)}</p>
+            </div>
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
+              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Despesas Fixas</h3>
               <p className="text-3xl font-bold text-gray-900">{formatCurrency(metrics.custoFixoMensal)}</p>
             </div>
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
@@ -203,9 +233,8 @@ export default function Recorrencias() {
               <p className="text-3xl font-bold text-orange-500">{formatCurrency(metrics.custoParceladoMensal)}</p>
             </div>
             <div className="bg-blue-950 p-6 rounded-2xl shadow-lg border border-blue-900 text-white">
-              <h3 className="text-sm font-semibold text-blue-200 uppercase tracking-wider mb-2">Dívida Total Restante</h3>
+              <h3 className="text-sm font-semibold text-blue-200 uppercase tracking-wider mb-2">Dívida Restante</h3>
               <p className="text-3xl font-bold">{formatCurrency(metrics.dividaTotalRestante)}</p>
-              <p className="text-xs text-blue-300 mt-1">Soma de todas as parcelas pendentes.</p>
             </div>
           </div>
 
@@ -218,10 +247,10 @@ export default function Recorrencias() {
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {recorrencias.map((item) => {
+                const isEntrada = item.tipoTransacao === "entrada";
                 const isParcelada = item.tipo === "parcelada";
                 const progresso = isParcelada ? (item.parcelaAtual / item.parcelasTotais) * 100 : 100;
                 
-                // Variáveis Corrigidas
                 const parcelasRestantes = isParcelada ? item.parcelasTotais - item.parcelaAtual : 0;
                 const valorTotalRestanteDoItem = parcelasRestantes * item.valor;
                 
@@ -231,30 +260,33 @@ export default function Recorrencias() {
                     <div className="flex justify-between items-start mb-4">
                       <div>
                         <div className="flex items-center gap-2 mb-1">
-                          <span className={`px-2.5 py-1 rounded-md text-xs font-bold uppercase tracking-wider ${isParcelada ? 'bg-orange-100 text-orange-800' : 'bg-blue-100 text-blue-800'}`}>
-                            {isParcelada ? 'Parcelado' : 'Conta Fixa'}
+                          <span className={`px-2.5 py-1 rounded-md text-xs font-bold uppercase tracking-wider ${isEntrada ? 'bg-green-100 text-green-800' : isParcelada ? 'bg-orange-100 text-orange-800' : 'bg-blue-100 text-blue-800'}`}>
+                            {isEntrada ? 'Receita Fixa' : isParcelada ? 'Despesa Parcelada' : 'Despesa Fixa'}
                           </span>
                           <span className="text-sm text-gray-400 font-medium capitalize">{item.categoria}</span>
                         </div>
                         <h3 className="text-xl font-bold text-gray-900 capitalize">{item.descricao}</h3>
                       </div>
-                      <div className="flex gap-1">
+                      <div className="flex gap-1 shrink-0">
                         <button onClick={() => handleOpenEdit(item)} className="p-1.5 text-gray-400 hover:text-blue-600 bg-gray-50 hover:bg-blue-50 rounded-lg"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg></button>
-                        <button onClick={() => handleDelete(item.id)} className="p-1.5 text-gray-400 hover:text-red-600 bg-gray-50 hover:bg-red-50 rounded-lg"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg></button>
+                        {/* NOVO: Usando a função confirmDelete */}
+                        <button onClick={() => confirmDelete(item.id)} className="p-1.5 text-gray-400 hover:text-red-600 bg-gray-50 hover:bg-red-50 rounded-lg"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg></button>
                       </div>
                     </div>
 
                     <div className="flex items-end justify-between mb-4">
                       <div>
                         <p className="text-xs text-gray-500 font-semibold uppercase mb-1">Valor Mensal</p>
-                        <p className="text-2xl font-extrabold text-red-600">{formatCurrency(item.valor)}</p>
+                        <p className={`text-2xl font-extrabold ${isEntrada ? 'text-green-600' : 'text-red-600'}`}>
+                          {isEntrada ? '+ ' : '- '}
+                          {formatCurrency(item.valor)}
+                        </p>
                       </div>
                       
                       {isParcelada && (
                         <div className="text-right">
                           <p className="text-xs text-gray-500 font-semibold uppercase mb-1">Faltam</p>
                           <p className="text-lg font-bold text-gray-900">{parcelasRestantes}x <span className="text-sm font-medium text-gray-500">de {formatCurrency(item.valor)}</span></p>
-                          {/* NOVO: Valor total restante exclusivo daquele item */}
                           <p className="text-xs font-bold text-red-500 mt-0.5">Restante: {formatCurrency(valorTotalRestanteDoItem)}</p>
                         </div>
                       )}
@@ -272,7 +304,7 @@ export default function Recorrencias() {
                       </div>
                     ) : (
                       <div className="mt-auto pt-4 border-t border-gray-100 flex justify-between items-center text-sm">
-                        <span className="text-gray-500">Recorrência Mensal Ininterrupta</span>
+                        <span className="text-gray-500 font-medium">Recorrência Mensal Fixa</span>
                         {item.dataInicio && <span className="font-bold text-gray-700 text-xs bg-gray-100 px-2 py-1 rounded">Desde: {item.dataInicio}</span>}
                       </div>
                     )}
@@ -284,6 +316,7 @@ export default function Recorrencias() {
         </div>
       </main>
 
+      {/* MODAL DE ADICIONAR / EDITAR */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-gray-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all">
@@ -295,19 +328,30 @@ export default function Recorrencias() {
             <form onSubmit={handleSubmit} className="p-6 space-y-5">
               
               <div className="flex gap-4 p-1 bg-gray-100 rounded-xl">
-                <label className={`flex-1 text-center py-2 rounded-lg cursor-pointer text-sm font-bold transition-colors ${formData.tipo === 'fixa' ? 'bg-white text-blue-800 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}>
-                  <input type="radio" className="hidden" checked={formData.tipo === 'fixa'} onChange={() => setFormData({...formData, tipo: 'fixa'})} />
-                  Conta Fixa
+                <label className={`flex-1 text-center py-2 rounded-lg cursor-pointer text-sm font-bold transition-colors ${formData.tipoTransacao === 'saida' ? 'bg-white text-red-600 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}>
+                  <input type="radio" className="hidden" checked={formData.tipoTransacao === 'saida'} onChange={() => setFormData({...formData, tipoTransacao: 'saida'})} />
+                  Despesa
                 </label>
-                <label className={`flex-1 text-center py-2 rounded-lg cursor-pointer text-sm font-bold transition-colors ${formData.tipo === 'parcelada' ? 'bg-white text-orange-600 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}>
+                <label className={`flex-1 text-center py-2 rounded-lg cursor-pointer text-sm font-bold transition-colors ${formData.tipoTransacao === 'entrada' ? 'bg-white text-green-600 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}>
+                  <input type="radio" className="hidden" checked={formData.tipoTransacao === 'entrada'} onChange={() => setFormData({...formData, tipoTransacao: 'entrada'})} />
+                  Receita
+                </label>
+              </div>
+
+              <div className="flex gap-4 p-1 bg-gray-50 rounded-xl border border-gray-100">
+                <label className={`flex-1 text-center py-1.5 rounded-lg cursor-pointer text-sm font-bold transition-colors ${formData.tipo === 'fixa' ? 'bg-white text-blue-800 shadow-sm border border-gray-200' : 'text-gray-400 hover:text-gray-700'}`}>
+                  <input type="radio" className="hidden" checked={formData.tipo === 'fixa'} onChange={() => setFormData({...formData, tipo: 'fixa'})} />
+                  Valor Fixo
+                </label>
+                <label className={`flex-1 text-center py-1.5 rounded-lg cursor-pointer text-sm font-bold transition-colors ${formData.tipo === 'parcelada' ? 'bg-white text-orange-600 shadow-sm border border-gray-200' : 'text-gray-400 hover:text-gray-700'}`}>
                   <input type="radio" className="hidden" checked={formData.tipo === 'parcelada'} onChange={() => setFormData({...formData, tipo: 'parcelada'})} />
-                  Parcelada
+                  Parcelado
                 </label>
               </div>
 
               <div>
                 <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Descrição</label>
-                <input required type="text" value={formData.descricao} onChange={(e) => setFormData({...formData, descricao: e.target.value})} placeholder="Ex: Aluguel, Celular novo..." className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" />
+                <input required type="text" value={formData.descricao} onChange={(e) => setFormData({...formData, descricao: e.target.value})} placeholder={formData.tipoTransacao === 'entrada' ? "Ex: Salário, Aluguel Recebido..." : "Ex: Aluguel, Celular novo..."} className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -317,7 +361,7 @@ export default function Recorrencias() {
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Categoria</label>
-                  <input required type="text" value={formData.categoria} onChange={(e) => setFormData({...formData, categoria: e.target.value})} placeholder="Ex: Moradia" className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" />
+                  <input required type="text" value={formData.categoria} onChange={(e) => setFormData({...formData, categoria: e.target.value})} placeholder={formData.tipoTransacao === 'entrada' ? "Ex: Renda" : "Ex: Moradia"} className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" />
                 </div>
               </div>
 
@@ -347,6 +391,76 @@ export default function Recorrencias() {
                 </button>
               </div>
             </form>
+
+          </div>
+        </div>
+      )}
+
+      {/* NOVO: MODAL DE CONFIRMAÇÃO DE EXCLUSÃO INDIVIDUAL */}
+      {itemToDelete && (
+        <div className="fixed inset-0 bg-gray-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden transform transition-all p-6 text-center">
+            
+            <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4 text-red-600 border border-red-100">
+              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            
+            <h3 className="text-xl font-bold text-gray-900 mb-2">Excluir Recorrência?</h3>
+            <p className="text-gray-500 text-sm mb-6">
+              Ela deixará de ser projetada no seu orçamento mensal a partir de agora.
+            </p>
+            
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setItemToDelete(null)} 
+                className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-all"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={executeDelete} 
+                className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-lg transition-all"
+              >
+                Sim, excluir
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* NOVO: MODAL DE CONFIRMAÇÃO DE EXCLUIR TUDO (LOTE) */}
+      {isDeleteAllModalOpen && (
+        <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all p-8 text-center border-2 border-red-100">
+            
+            <div className="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-5 text-red-600 shadow-inner">
+              <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </div>
+            
+            <h3 className="text-2xl font-black text-gray-900 mb-2 uppercase tracking-wide">Atenção!</h3>
+            <p className="text-gray-600 font-medium mb-8">
+              Você está prestes a <span className="text-red-600 font-bold">APAGAR TODAS</span> as suas recorrências de uma vez. Essa ação <strong className="text-gray-900">não pode ser desfeita</strong>. Tem certeza?
+            </p>
+            
+            <div className="flex flex-col gap-3">
+              <button 
+                onClick={executeDeleteAll} 
+                className="w-full py-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-lg transition-all text-lg"
+              >
+                Sim, apagar tudo
+              </button>
+              <button 
+                onClick={() => setIsDeleteAllModalOpen(false)} 
+                className="w-full py-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-all"
+              >
+                Cancelar e voltar
+              </button>
+            </div>
 
           </div>
         </div>

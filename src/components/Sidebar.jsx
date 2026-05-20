@@ -2,10 +2,11 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { NavLink } from "react-router-dom";
+import logoIcon from "../assets/newcoin_icon.png";
 
 export default function Sidebar({ mobileOpen, setMobileOpen }) {
   const { user, logout } = useAuth();
-  
+
   // LER DO LOCALSTORAGE: Verifica se o usuário já havia deixado a barra recolhida antes
   const [collapsed, setCollapsed] = useState(() => {
     const savedState = localStorage.getItem("sidebarCollapsed");
@@ -39,37 +40,43 @@ export default function Sidebar({ mobileOpen, setMobileOpen }) {
   return (
     <>
       {mobileOpen && (
-        <div 
+        <div
           className="fixed inset-0 bg-black/60 z-40 md:hidden transition-opacity"
           onClick={() => setMobileOpen(false)}
         />
       )}
 
-      <aside 
+      <aside
         className={`fixed md:relative z-50 h-screen bg-gray-950 flex flex-col border-r border-blue-950/50 shadow-2xl transition-all duration-300 flex-shrink-0
           ${collapsed ? "md:w-20" : "md:w-64"} 
           w-64
           ${mobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}
         `}
       >
-        <button 
+        <button
           onClick={toggleCollapse} // AQUI: Chama a nova função em vez do setCollapsed direto
           className="hidden md:flex absolute -right-3 top-10 bg-blue-900 border border-gray-800 text-white w-6 h-6 rounded-full items-center justify-center z-50 shadow-md hover:bg-blue-700 transition-colors"
         >
-          <svg className={`w-4 h-4 transition-transform ${collapsed ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"/></svg>
+          <svg className={`w-4 h-4 transition-transform ${collapsed ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7" /></svg>
         </button>
 
+        {/* LOGO SECTION */}
         <div className={`h-20 flex items-center border-b border-gray-800 relative ${collapsed ? 'justify-center' : 'px-6'}`}>
-          <div className="w-8 h-8 flex-shrink-0 bg-black rounded-full flex items-center justify-center text-green-500 font-bold text-lg shadow-inner border border-blue-900/30">
-            $
-          </div>
+          {/* 2. SUBSTITUÍMOS O DIV PELA TAG IMG */}
+          <img
+            src={logoIcon}
+            alt="NewCoinManager"
+            className="w-8 h-8 flex-shrink-0 object-contain"
+          />
+          {/* 3. ATUALIZAMOS O NOME */}
           {!collapsed && (
             <h1 className="text-xl font-bold text-white tracking-wide ml-3 whitespace-nowrap">
-              New<span className="text-blue-500">Coin</span>
+              NCM
             </h1>
           )}
+          {/* Botão de fechar mobile */}
           <button className="md:hidden absolute right-4 text-gray-400 hover:text-white p-2" onClick={() => setMobileOpen(false)}>
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
 
@@ -101,7 +108,7 @@ export default function Sidebar({ mobileOpen, setMobileOpen }) {
               <span className="text-xs text-gray-500 truncate">{user?.email}</span>
             </div>
           )}
-          
+
           <button
             onClick={handleLogout}
             title={collapsed ? "Sair" : ""}

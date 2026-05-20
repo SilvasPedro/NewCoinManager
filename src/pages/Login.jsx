@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
+import logoIcon from "../assets/newcoin_icon.png";
 
 export default function Login() {
   const [error, setError] = useState("");
@@ -39,11 +40,12 @@ export default function Login() {
         
         {/* Cabeçalho do Card */}
         <div className="flex flex-col items-center mb-12 text-center">
-          {/* Logo Estilizada (Círculo Preto/Azul Escuro com Cifrão Verde) */}
-          <div className="w-20 h-20 bg-gray-950 rounded-full flex items-center justify-center text-green-500 font-bold text-5xl mb-6 shadow-inner border-4 border-blue-950/20">
-            $
-          </div>
-          
+    
+          <img 
+            src={logoIcon} 
+            alt="NewCoinManager" 
+            className="w-auto h-20 flex-shrink-0 object-contain" 
+          />
           <h1 className="text-4xl font-extrabold text-gray-950 tracking-tight">
             New<span className="text-blue-950">Coin</span><span className="text-green-600">Manager</span>
           </h1>
