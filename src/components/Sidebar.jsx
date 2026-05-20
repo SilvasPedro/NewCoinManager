@@ -1,11 +1,16 @@
 // src/components/Sidebar.jsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { NavLink } from "react-router-dom";
 
 export default function Sidebar({ mobileOpen, setMobileOpen }) {
   const { user, logout } = useAuth();
-  const [collapsed, setCollapsed] = useState(false); // Estado para o botão de recolher (Desktop)
+  
+  // LER DO LOCALSTORAGE: Verifica se o usuário já havia deixado a barra recolhida antes
+  const [collapsed, setCollapsed] = useState(() => {
+    const savedState = localStorage.getItem("sidebarCollapsed");
+    return savedState === "true"; // Retorna true se estava salva como recolhida
+  });
 
   async function handleLogout() {
     try {
@@ -14,6 +19,13 @@ export default function Sidebar({ mobileOpen, setMobileOpen }) {
       console.error("Erro ao fazer logout:", error);
     }
   }
+
+  // FUNÇÃO PARA RECOLHER/EXPANDIR E SALVAR A ESCOLHA
+  const toggleCollapse = () => {
+    const newState = !collapsed;
+    setCollapsed(newState);
+    localStorage.setItem("sidebarCollapsed", String(newState));
+  };
 
   const menuItems = [
     { name: "Visão Geral", path: "/", icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" },
@@ -26,7 +38,6 @@ export default function Sidebar({ mobileOpen, setMobileOpen }) {
 
   return (
     <>
-      {/* Fundo escuro (Backdrop) visível apenas em telas pequenas quando o menu estiver aberto */}
       {mobileOpen && (
         <div 
           className="fixed inset-0 bg-black/60 z-40 md:hidden transition-opacity"
@@ -34,7 +45,6 @@ export default function Sidebar({ mobileOpen, setMobileOpen }) {
         />
       )}
 
-      {/* Container Principal da Sidebar */}
       <aside 
         className={`fixed md:relative z-50 h-screen bg-gray-950 flex flex-col border-r border-blue-950/50 shadow-2xl transition-all duration-300 flex-shrink-0
           ${collapsed ? "md:w-20" : "md:w-64"} 
@@ -42,15 +52,13 @@ export default function Sidebar({ mobileOpen, setMobileOpen }) {
           ${mobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}
         `}
       >
-        {/* Botão de Recolher (Apenas Desktop) */}
         <button 
-          onClick={() => setCollapsed(!collapsed)}
+          onClick={toggleCollapse} // AQUI: Chama a nova função em vez do setCollapsed direto
           className="hidden md:flex absolute -right-3 top-10 bg-blue-900 border border-gray-800 text-white w-6 h-6 rounded-full items-center justify-center z-50 shadow-md hover:bg-blue-700 transition-colors"
         >
           <svg className={`w-4 h-4 transition-transform ${collapsed ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"/></svg>
         </button>
 
-        {/* Cabeçalho / Logo */}
         <div className={`h-20 flex items-center border-b border-gray-800 relative ${collapsed ? 'justify-center' : 'px-6'}`}>
           <div className="w-8 h-8 flex-shrink-0 bg-black rounded-full flex items-center justify-center text-green-500 font-bold text-lg shadow-inner border border-blue-900/30">
             $
@@ -60,19 +68,17 @@ export default function Sidebar({ mobileOpen, setMobileOpen }) {
               New<span className="text-blue-500">Coin</span>
             </h1>
           )}
-          {/* Botão de fechar (Apenas Mobile) */}
           <button className="md:hidden absolute right-4 text-gray-400 hover:text-white p-2" onClick={() => setMobileOpen(false)}>
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/></svg>
           </button>
         </div>
 
-        {/* Navegação */}
         <nav className="flex-1 px-3 py-6 space-y-2 overflow-y-auto overflow-x-hidden">
           {menuItems.map((item) => (
             <NavLink
               key={item.name}
               to={item.path}
-              onClick={() => setMobileOpen(false)} // Fecha no celular ao clicar
+              onClick={() => setMobileOpen(false)}
               className={({ isActive }) =>
                 `flex items-center rounded-xl transition-all duration-200 font-medium
                 ${collapsed ? "justify-center py-3" : "px-4 py-3 gap-3"}
@@ -88,7 +94,6 @@ export default function Sidebar({ mobileOpen, setMobileOpen }) {
           ))}
         </nav>
 
-        {/* Rodapé (Usuário) */}
         <div className={`p-4 border-t border-gray-800 bg-black/20 flex flex-col ${collapsed ? 'items-center' : ''}`}>
           {!collapsed && (
             <div className="flex flex-col mb-4 px-2">
