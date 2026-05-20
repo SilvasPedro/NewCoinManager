@@ -23,17 +23,16 @@ export default function Recorrencias() {
     descricao: "",
     valor: "",
     categoria: "",
-    tipo: "fixa", // 'fixa' ou 'parcelada'
+    tipo: "fixa",
     parcelaAtual: 1,
     parcelasTotais: 2,
-    dataInicio: "" // formato YYYY-MM
+    dataInicio: ""
   });
 
   const formatCurrency = (value) => {
     return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
   };
 
-  // 1. BUSCAR DADOS
   const fetchRecorrencias = async () => {
     if (!user?.uid) return;
     try {
@@ -44,7 +43,6 @@ export default function Recorrencias() {
       querySnapshot.forEach((doc) => {
         dados.push({ id: doc.id, ...doc.data() });
       });
-      // Ordena por data de criação
       dados.sort((a, b) => b.criadoEm - a.criadoEm);
       setRecorrencias(dados);
     } catch (error) {
@@ -58,7 +56,7 @@ export default function Recorrencias() {
     fetchRecorrencias();
   }, [user]);
 
-  // 2. CÁLCULOS E MÉTRICAS
+  // CORREÇÃO: Cálculos matemáticos precisos
   const metrics = useMemo(() => {
     let custoFixoMensal = 0;
     let custoParceladoMensal = 0;
@@ -69,28 +67,31 @@ export default function Recorrencias() {
         custoFixoMensal += item.valor;
       } else if (item.tipo === "parcelada") {
         custoParceladoMensal += item.valor;
-        // Calcula quanto falta pagar: (Total - Atual + 1) * valor. 
-        // +1 porque assume que a atual ainda não foi paga ou faz parte do montante devido.
-        const parcelasRestantes = (item.parcelasTotais - item.parcelaAtual) + 1;
+        
+        // CORREÇÃO: Calcula apenas as que faltam baseado no que o usuário digitou (Total - Atual)
+        const parcelasRestantes = item.parcelasTotais - item.parcelaAtual;
         if (parcelasRestantes > 0) {
           dividaTotalRestante += (parcelasRestantes * item.valor);
         }
       }
     });
 
-    return { custoFixoMensal, custoParceladoMensal, custoTotalMensal: custoFixoMensal + custoParceladoMensal, dividaTotalRestante };
+    return { custoFixoMensal, custoParceladoMensal, dividaTotalRestante };
   }, [recorrencias]);
 
-  // Função para calcular mês de término
-  const calcularPrevisaoFim = (dataInicio, parcelasTotais) => {
+  // CORREÇÃO: A previsão do fim agora usa as parcelas que faltam a partir do mês atual indicado
+  const calcularPrevisaoFim = (dataInicio, parcelaAtual, parcelasTotais) => {
     if (!dataInicio) return "Desconhecido";
     const [ano, mes] = dataInicio.split("-").map(Number);
-    // Adiciona os meses (Total - 1, porque o mês 1 já é a data de início)
-    const dataFim = new Date(ano, mes - 1 + (parcelasTotais - 1), 1);
+    const mesesRestantes = parcelasTotais - parcelaAtual;
+    
+    // Soma apenas os meses restantes ao mês indicado
+    const dataFim = new Date(ano, (mes - 1) + mesesRestantes, 1);
+    
+    // Devolve formatado (Ex: mai. de 2028)
     return dataFim.toLocaleDateString('pt-BR', { month: 'short', year: 'numeric' });
   };
 
-  // 3. CRUD
   const handleOpenAdd = () => {
     setFormData({ descricao: "", valor: "", categoria: "", tipo: "fixa", parcelaAtual: 1, parcelasTotais: 2, dataInicio: "" });
     setEditingId(null);
@@ -170,7 +171,6 @@ export default function Recorrencias() {
       <main className="flex-1 overflow-y-auto p-4 md:p-8 relative">
         <div className="max-w-7xl mx-auto space-y-6">
           
-          {/* Cabeçalho */}
           <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white md:bg-transparent p-4 md:p-0 rounded-2xl md:rounded-none shadow-sm md:shadow-none border md:border-none border-gray-200">
             <div className="flex items-center gap-4">
               <button onClick={() => setMobileOpen(true)} className="md:hidden p-2 text-gray-600 bg-gray-100 rounded-lg">
@@ -193,7 +193,6 @@ export default function Recorrencias() {
             </div>
           </header>
 
-          {/* Cards de Resumo */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
               <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Custos Fixos Mensais</h3>
@@ -210,7 +209,6 @@ export default function Recorrencias() {
             </div>
           </div>
 
-          {/* Lista de Recorrências */}
           {loading ? (
             <div className="text-center p-10 text-gray-500">Carregando dados...</div>
           ) : recorrencias.length === 0 ? (
@@ -222,7 +220,10 @@ export default function Recorrencias() {
               {recorrencias.map((item) => {
                 const isParcelada = item.tipo === "parcelada";
                 const progresso = isParcelada ? (item.parcelaAtual / item.parcelasTotais) * 100 : 100;
-                const parcelasRestantes = isParcelada ? (item.parcelasTotais - item.parcelaAtual) + 1 : 0;
+                
+                // Variáveis Corrigidas
+                const parcelasRestantes = isParcelada ? item.parcelasTotais - item.parcelaAtual : 0;
+                const valorTotalRestanteDoItem = parcelasRestantes * item.valor;
                 
                 return (
                   <div key={item.id} className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 flex flex-col hover:shadow-md transition-shadow">
@@ -248,10 +249,13 @@ export default function Recorrencias() {
                         <p className="text-xs text-gray-500 font-semibold uppercase mb-1">Valor Mensal</p>
                         <p className="text-2xl font-extrabold text-red-600">{formatCurrency(item.valor)}</p>
                       </div>
+                      
                       {isParcelada && (
                         <div className="text-right">
                           <p className="text-xs text-gray-500 font-semibold uppercase mb-1">Faltam</p>
                           <p className="text-lg font-bold text-gray-900">{parcelasRestantes}x <span className="text-sm font-medium text-gray-500">de {formatCurrency(item.valor)}</span></p>
+                          {/* NOVO: Valor total restante exclusivo daquele item */}
+                          <p className="text-xs font-bold text-red-500 mt-0.5">Restante: {formatCurrency(valorTotalRestanteDoItem)}</p>
                         </div>
                       )}
                     </div>
@@ -260,7 +264,7 @@ export default function Recorrencias() {
                       <div className="mt-auto pt-4 border-t border-gray-100">
                         <div className="flex justify-between text-sm font-bold text-gray-700 mb-2">
                           <span>Parcela {item.parcelaAtual} de {item.parcelasTotais}</span>
-                          <span className="text-gray-400 font-medium">Fim: <span className="text-gray-700 capitalize">{calcularPrevisaoFim(item.dataInicio, item.parcelasTotais)}</span></span>
+                          <span className="text-gray-400 font-medium">Fim: <span className="text-gray-700 capitalize">{calcularPrevisaoFim(item.dataInicio, item.parcelaAtual, item.parcelasTotais)}</span></span>
                         </div>
                         <div className="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden">
                           <div className="bg-orange-500 h-2.5 rounded-full transition-all duration-500" style={{ width: `${progresso}%` }}></div>
@@ -280,7 +284,6 @@ export default function Recorrencias() {
         </div>
       </main>
 
-      {/* MODAL CRIAR/EDITAR */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-gray-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all">

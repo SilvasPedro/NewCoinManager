@@ -8,55 +8,126 @@ import {
   addDoc, updateDoc, deleteDoc, doc 
 } from "firebase/firestore";
 
+// Lista de categorias padrão para todos os usuários
+const CATEGORIAS_PADRAO = [
+  "Alimentação",
+  "Educação",
+  "Lazer",
+  "Moradia",
+  "Saúde",
+  "Transporte",
+  "Outros"
+];
+
 export default function Lancamentos() {
   const { user } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   
-  // Estado dos dados e carregamento
   const [transacoes, setTransacoes] = useState([]);
+  const [categoriasUser, setCategoriasUser] = useState([]); 
   const [loading, setLoading] = useState(true);
   
-  // Mês selecionado (padrão: mês atual)
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const dataAtual = new Date();
     return `${dataAtual.getFullYear()}-${String(dataAtual.getMonth() + 1).padStart(2, "0")}`;
   });
 
-  // Controle do Modal
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   
-  // Dados do formulário
   const [formData, setFormData] = useState({
     descricao: "",
     valor: "",
     tipo: "saida",
-    categoria: "",
+    categoria: "", 
     pago: false,
     referencia: selectedMonth
   });
 
-  // Função para formatar moeda
   const formatCurrency = (value) => {
     return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
   };
 
-  // 1. LER: Buscar transações do Firebase filtradas por usuário e mês
+  // BUSCAR CATEGORIAS EXCLUSIVAS DO USUÁRIO
+  const fetchCategorias = async () => {
+    if (!user?.uid) return;
+    try {
+      // O filtro "where" garante que ele veja APENAS as categorias que ele mesmo criou
+      const q = query(collection(db, "categorias"), where("uid", "==", user.uid));
+      const snap = await getDocs(q);
+      const cats = [];
+      snap.forEach(doc => cats.push(doc.data().nome));
+      setCategoriasUser(cats.sort());
+    } catch (error) {
+      console.error("Erro ao buscar categorias:", error);
+    }
+  };
+
+  // BUSCAR LANÇAMENTOS + INJETAR RECORRÊNCIAS
   const fetchTransacoes = async () => {
     if (!user?.uid) return;
     try {
       setLoading(true);
-      const q = query(
+      
+      const qFinancas = query(
         collection(db, "financas"), 
         where("uid", "==", user.uid),
         where("referencia", "==", selectedMonth)
       );
-      const querySnapshot = await getDocs(q);
+      
+      const qRecorrencias = query(
+        collection(db, "recorrencias"), 
+        where("uid", "==", user.uid)
+      );
+
+      const [snapFinancas, snapRecorrencias] = await Promise.all([
+        getDocs(qFinancas),
+        getDocs(qRecorrencias)
+      ]);
+
       const dados = [];
-      querySnapshot.forEach((doc) => {
+      
+      snapFinancas.forEach((doc) => {
         dados.push({ id: doc.id, ...doc.data() });
       });
-      // Ordena por data de criação (mais recentes primeiro)
+
+      const [selYear, selMonth] = selectedMonth.split("-").map(Number);
+
+      snapRecorrencias.forEach((doc) => {
+        const item = doc.data();
+        if (!item.dataInicio) return;
+        
+        const [startYear, startMonth] = item.dataInicio.split("-").map(Number);
+        const monthDiff = (selYear - startYear) * 12 + (selMonth - startMonth);
+
+        if (monthDiff < 0) return; 
+
+        if (item.tipo === "fixa") {
+          dados.push({
+            id: `rec-${doc.id}`, 
+            descricao: item.descricao,
+            valor: item.valor,
+            tipo: "saida", 
+            categoria: item.categoria,
+            isRecorrente: true, 
+            criadoEm: item.criadoEm || Date.now()
+          });
+        } else if (item.tipo === "parcelada") {
+          const parcelaDesteMes = item.parcelaAtual + monthDiff;
+          if (parcelaDesteMes <= item.parcelasTotais) {
+            dados.push({
+              id: `rec-${doc.id}`,
+              descricao: `${item.descricao} (${parcelaDesteMes}/${item.parcelasTotais})`,
+              valor: item.valor,
+              tipo: "saida",
+              categoria: item.categoria,
+              isRecorrente: true,
+              criadoEm: item.criadoEm || Date.now()
+            });
+          }
+        }
+      });
+
       dados.sort((a, b) => b.criadoEm - a.criadoEm);
       setTransacoes(dados);
     } catch (error) {
@@ -67,19 +138,17 @@ export default function Lancamentos() {
   };
 
   useEffect(() => {
+    fetchCategorias();
     fetchTransacoes();
-    // Atualiza a referência do formulário caso o mês selecionado mude
     setFormData(prev => ({ ...prev, referencia: selectedMonth }));
   }, [user, selectedMonth]);
 
-  // Abrir modal para Adicionar
   const handleOpenAdd = () => {
     setFormData({ descricao: "", valor: "", tipo: "saida", categoria: "", pago: false, referencia: selectedMonth });
     setEditingId(null);
     setIsModalOpen(true);
   };
 
-  // Abrir modal para Editar
   const handleOpenEdit = (t) => {
     setFormData({
       descricao: t.descricao,
@@ -93,55 +162,58 @@ export default function Lancamentos() {
     setIsModalOpen(true);
   };
 
-  // 2 e 3. CRIAR e ATUALIZAR: Salvar no Firebase
-  const handleSubmit = async (e) => {
+const handleSubmit = async (e) => {
     e.preventDefault();
     try {
+      // Prepara os dados básicos que servem tanto para criar quanto para editar
       const dataToSave = {
         ...formData,
         valor: parseFloat(formData.valor),
         uid: user.uid,
-        criadoEm: editingId ? undefined : Date.now(), // Mantém a data original se for edição
       };
 
       if (editingId) {
+        // Se estiver EDITANDO, atualiza apenas os dados alterados (sem tocar no criadoEm)
         await updateDoc(doc(db, "financas", editingId), dataToSave);
       } else {
+        // Se for NOVO, adicionamos a data de criação exata de agora antes de salvar
+        dataToSave.criadoEm = Date.now();
         await addDoc(collection(db, "financas"), dataToSave);
       }
       
       setIsModalOpen(false);
-      fetchTransacoes(); // Recarrega a lista
+      fetchTransacoes();
     } catch (error) {
       console.error("Erro ao salvar:", error);
       alert("Erro ao salvar o lançamento.");
     }
   };
 
-  // 4. DELETAR
   const handleDelete = async (id) => {
     if (window.confirm("Tem certeza que deseja excluir este lançamento?")) {
       try {
         await deleteDoc(doc(db, "financas", id));
-        fetchTransacoes(); // Recarrega a lista
+        fetchTransacoes();
       } catch (error) {
         console.error("Erro ao deletar:", error);
       }
     }
   };
 
-  // Marcar como pago/não pago rapidamente pela tabela
   const togglePago = async (id, currentStatus) => {
     try {
-      // Atualiza o estado local imediatamente para parecer mais rápido (Optimistic UI)
       setTransacoes(transacoes.map(t => t.id === id ? { ...t, pago: !currentStatus } : t));
-      // Salva no banco
       await updateDoc(doc(db, "financas", id), { pago: !currentStatus });
     } catch (error) {
       console.error("Erro ao atualizar status:", error);
-      fetchTransacoes(); // Reverte em caso de erro
+      fetchTransacoes();
     }
   };
+
+  // Prepara as categorias do usuário, removendo duplicatas caso ele crie uma com o mesmo nome das padrões
+  const categoriasPersonalizadas = categoriasUser.filter(
+    catUser => !CATEGORIAS_PADRAO.map(c => c.toLowerCase()).includes(catUser.toLowerCase())
+  );
 
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden">
@@ -150,7 +222,6 @@ export default function Lancamentos() {
       <main className="flex-1 overflow-y-auto p-4 md:p-8 relative">
         <div className="max-w-7xl mx-auto space-y-6">
           
-          {/* Cabeçalho */}
           <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white md:bg-transparent p-4 md:p-0 rounded-2xl md:rounded-none shadow-sm md:shadow-none border md:border-none border-gray-200">
             <div className="flex items-center gap-4">
               <button onClick={() => setMobileOpen(true)} className="md:hidden p-2 text-gray-600 bg-gray-100 rounded-lg">
@@ -179,7 +250,6 @@ export default function Lancamentos() {
             </div>
           </header>
 
-          {/* Lista/Tabela de Transações */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
             {loading ? (
               <div className="p-10 text-center text-gray-500">Carregando dados...</div>
@@ -207,8 +277,14 @@ export default function Lancamentos() {
                     {transacoes.map((t) => (
                       <tr key={t.id} className="hover:bg-gray-50/50 transition-colors">
                         <td className="p-4">
-                          <p className="font-bold text-gray-900 capitalize">{t.descricao}</p>
-                          {/* Em telas muito pequenas, a categoria aparece em baixo da descrição */}
+                          <p className="font-bold text-gray-900 capitalize flex items-center gap-2">
+                            {t.descricao}
+                            {t.isRecorrente && (
+                              <span className="px-2 py-0.5 bg-blue-100 text-blue-800 text-[10px] uppercase font-bold rounded-md border border-blue-200">
+                                Recorrente
+                              </span>
+                            )}
+                          </p>
                           <p className="text-xs text-gray-500 sm:hidden capitalize mt-0.5">{t.categoria}</p>
                         </td>
                         <td className="p-4 hidden sm:table-cell capitalize text-gray-600 font-medium">
@@ -221,7 +297,11 @@ export default function Lancamentos() {
                           </span>
                         </td>
                         <td className="p-4 text-center">
-                          {t.tipo === "saida" ? (
+                          {t.isRecorrente ? (
+                            <span className="px-3 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                              Automático
+                            </span>
+                          ) : t.tipo === "saida" ? (
                             <button 
                               onClick={() => togglePago(t.id, t.pago)}
                               className={`px-3 py-1 rounded-full text-xs font-bold inline-flex items-center gap-1.5 transition-colors border ${
@@ -239,13 +319,19 @@ export default function Lancamentos() {
                             </span>
                           )}
                         </td>
-                        <td className="p-4 text-right space-x-2">
-                          <button onClick={() => handleOpenEdit(t)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Editar">
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
-                          </button>
-                          <button onClick={() => handleDelete(t.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Excluir">
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                          </button>
+                        <td className="p-4 text-right">
+                          {t.isRecorrente ? (
+                            <span className="text-xs text-gray-400 font-medium">Editar em Recorrências</span>
+                          ) : (
+                            <div className="space-x-2">
+                              <button onClick={() => handleOpenEdit(t)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Editar">
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                              </button>
+                              <button onClick={() => handleDelete(t.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Excluir">
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                              </button>
+                            </div>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -274,7 +360,6 @@ export default function Lancamentos() {
 
             <form onSubmit={handleSubmit} className="p-6 space-y-5">
               
-              {/* Tipo (Radio Buttons) */}
               <div className="flex gap-4 p-1 bg-gray-100 rounded-xl">
                 <label className={`flex-1 text-center py-2 rounded-lg cursor-pointer text-sm font-bold transition-colors ${formData.tipo === 'saida' ? 'bg-white text-red-600 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}>
                   <input type="radio" name="tipo" className="hidden" checked={formData.tipo === 'saida'} onChange={() => setFormData({...formData, tipo: 'saida'})} />
@@ -286,7 +371,6 @@ export default function Lancamentos() {
                 </label>
               </div>
 
-              {/* Descrição e Valor */}
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2">
                   <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Descrição</label>
@@ -300,18 +384,51 @@ export default function Lancamentos() {
 
                 <div className="col-span-2 sm:col-span-1">
                   <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Categoria</label>
-                  <input required type="text" value={formData.categoria} onChange={(e) => setFormData({...formData, categoria: e.target.value})} placeholder="Ex: Alimentação" className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all font-medium capitalize" />
+                  
+                  {/* NOVO: SELECT AGRUPADO DE CATEGORIAS */}
+                  <select 
+                    required 
+                    value={formData.categoria} 
+                    onChange={(e) => setFormData({...formData, categoria: e.target.value})} 
+                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all font-medium capitalize"
+                  >
+                    <option value="" disabled>Selecione...</option>
+                    
+                    {/* Grupo 1: Categorias Básicas */}
+                    <optgroup label="Básicas">
+                      {CATEGORIAS_PADRAO.map(cat => (
+                        <option key={cat} value={cat.toLowerCase()}>{cat}</option>
+                      ))}
+                    </optgroup>
+
+                    {/* Grupo 2: Categorias do Usuário */}
+                    {categoriasPersonalizadas.length > 0 && (
+                      <optgroup label="Minhas Categorias">
+                        {categoriasPersonalizadas.map((cat, idx) => (
+                          <option key={`user-${idx}`} value={cat.toLowerCase()}>{cat}</option>
+                        ))}
+                      </optgroup>
+                    )}
+
+                    {/* Grupo Extra: Caso esteja editando um lançamento com categoria que não existe mais */}
+                    {formData.categoria && 
+                     !CATEGORIAS_PADRAO.map(c => c.toLowerCase()).includes(formData.categoria.toLowerCase()) && 
+                     !categoriasUser.map(c => c.toLowerCase()).includes(formData.categoria.toLowerCase()) && (
+                       <optgroup label="Categoria Antiga (Inativa)">
+                         <option value={formData.categoria.toLowerCase()}>{formData.categoria}</option>
+                       </optgroup>
+                    )}
+                  </select>
+
                 </div>
               </div>
 
-              {/* Mês de Referência e Status Pago */}
               <div className="flex items-center justify-between pt-2">
                 <div>
                   <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Competência</label>
                   <input required type="month" value={formData.referencia} onChange={(e) => setFormData({...formData, referencia: e.target.value})} className="px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500" />
                 </div>
 
-                {/* Mostra a opção de Pago apenas se for uma Despesa */}
                 {formData.tipo === 'saida' && (
                   <label className="flex items-center gap-3 cursor-pointer mt-5">
                     <div className="relative">

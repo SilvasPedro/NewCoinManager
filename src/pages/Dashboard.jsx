@@ -4,7 +4,6 @@ import { useAuth } from "../contexts/AuthContext";
 import Sidebar from "../components/Sidebar";
 import { collection, query, where, getDocs, doc, getDoc } from "firebase/firestore";
 import { db } from "../config/firebase";
-// Importações atualizadas do Recharts para o novo gráfico misto
 import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 export default function Dashboard() {
@@ -12,11 +11,12 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
   
-  // Dados brutos e controle de visualização
+  // Dados puros do banco
   const [allTransacoes, setAllTransacoes] = useState([]);
-  const [hasFamily, setHasFamily] = useState(false);
-  const [viewMode, setViewMode] = useState("individual"); // 'individual' ou 'familia'
+  const [allRecorrencias, setAllRecorrencias] = useState([]); // NOVO: Armazena as recorrências
   
+  const [hasFamily, setHasFamily] = useState(false);
+  const [viewMode, setViewMode] = useState("individual");
   const [reservaPercentual, setReservaPercentual] = useState(0);
   
   const [selectedMonth, setSelectedMonth] = useState(() => {
@@ -34,13 +34,11 @@ export default function Dashboard() {
       try {
         setLoading(true);
         
-        // 1. Busca Configuração do Usuário
         const configSnap = await getDoc(doc(db, "configuracoes", user.uid));
         if (configSnap.exists()) {
           setReservaPercentual(configSnap.data().reservaPercentual || 0);
         }
 
-        // 2. Busca Conexões da Família (Quais UIDs estão ligados a mim?)
         const conexoesRef = collection(db, "conexoes_familia");
         const q1 = query(conexoesRef, where("usuario1_uid", "==", user.uid), where("status", "==", "aceito"));
         const q2 = query(conexoesRef, where("usuario2_uid", "==", user.uid), where("status", "==", "aceito"));
@@ -51,25 +49,31 @@ export default function Dashboard() {
         snap1.forEach(d => uidsFamilia.push(d.data().usuario2_uid));
         snap2.forEach(d => uidsFamilia.push(d.data().usuario1_uid));
         
-        // Remove duplicatas
         uidsFamilia = [...new Set(uidsFamilia.filter(id => id))];
         setHasFamily(uidsFamilia.length > 1);
 
-        // 3. Busca TODAS as transações envolvendo os UIDs da Família
-        // O Firestore permite o uso do 'in' para buscar arrays (máx 10 itens, perfeito para famílias)
         const chunks = [];
         for (let i = 0; i < uidsFamilia.length; i += 10) {
            chunks.push(uidsFamilia.slice(i, i + 10));
         }
         
         let todasTr = [];
+        let todasRec = [];
+
         for (const chunk of chunks) {
+            // Busca lançamentos normais
             const qTr = query(collection(db, "financas"), where("uid", "in", chunk));
             const snapTr = await getDocs(qTr);
             snapTr.forEach(d => todasTr.push({ id: d.id, ...d.data() }));
+
+            // Busca recorrências
+            const qRec = query(collection(db, "recorrencias"), where("uid", "in", chunk));
+            const snapRec = await getDocs(qRec);
+            snapRec.forEach(d => todasRec.push({ id: d.id, ...d.data() }));
         }
         
         setAllTransacoes(todasTr);
+        setAllRecorrencias(todasRec);
 
       } catch (error) {
         console.error("Erro ao buscar dados:", error);
@@ -80,12 +84,48 @@ export default function Dashboard() {
     fetchDados();
   }, [user]);
 
-  // Filtra as transações baseando-se no botão "Individual/Família"
-  const transacoesAtuais = useMemo(() => {
-    if (viewMode === "familia") return allTransacoes;
-    return allTransacoes.filter(t => t.uid === user?.uid);
-  }, [allTransacoes, viewMode, user]);
+  // NOVO: Injeta as Recorrências matematicamente dentro dos lançamentos da Dashboard
+  const transacoesCompletas = useMemo(() => {
+    const trFiltradas = viewMode === "familia" ? allTransacoes : allTransacoes.filter(t => t.uid === user?.uid);
+    const recFiltradas = viewMode === "familia" ? allRecorrencias : allRecorrencias.filter(r => r.uid === user?.uid);
 
+    // Identifica todos os meses que precisam ser calculados (os que já têm lançamento + Mês Selecionado + Mês Anterior)
+    const [year, month] = selectedMonth.split("-").map(Number);
+    const dataAnterior = new Date(year, month - 2, 1); 
+    const prevRef = `${dataAnterior.getFullYear()}-${String(dataAnterior.getMonth() + 1).padStart(2, "0")}`;
+    
+    const mesesParaGerar = new Set([...trFiltradas.map(t => t.referencia), selectedMonth, prevRef]);
+    const transacoesFinais = [...trFiltradas];
+
+    recFiltradas.forEach(rec => {
+      if (!rec.dataInicio) return;
+      const [startYear, startMonth] = rec.dataInicio.split("-").map(Number);
+
+      mesesParaGerar.forEach(refMes => {
+        if (!refMes) return;
+        const [refY, refM] = refMes.split("-").map(Number);
+        const monthDiff = (refY - startYear) * 12 + (refM - startMonth);
+
+        // Se a conta já começou nesta data
+        if (monthDiff >= 0) {
+          if (rec.tipo === "fixa" || (rec.tipo === "parcelada" && rec.parcelaAtual + monthDiff <= rec.parcelasTotais)) {
+            transacoesFinais.push({
+              id: `rec-${rec.id}-${refMes}`,
+              valor: rec.valor,
+              tipo: "saida", // Recorrências são saídas
+              categoria: rec.categoria,
+              referencia: refMes,
+              descricao: rec.descricao
+            });
+          }
+        }
+      });
+    });
+
+    return transacoesFinais;
+  }, [allTransacoes, allRecorrencias, viewMode, user, selectedMonth]);
+
+  // Cálculos das Métricas (Agora usando o transacoesCompletas que inclui as recorrências)
   const metrics = useMemo(() => {
     const currentRef = selectedMonth;
     const [year, month] = selectedMonth.split("-").map(Number);
@@ -97,8 +137,7 @@ export default function Dashboard() {
     const categoriasMes = {};
     const historicoPorMes = {};
 
-    transacoesAtuais.forEach((t) => {
-      // Para o Gráfico (Agrupa tudo do histórico)
+    transacoesCompletas.forEach((t) => {
       if (!historicoPorMes[t.referencia]) {
         historicoPorMes[t.referencia] = { name: t.referencia, receitas: 0, despesas: 0, saldo: 0 };
       }
@@ -106,7 +145,6 @@ export default function Dashboard() {
       if (t.tipo === "saida") historicoPorMes[t.referencia].despesas += t.valor;
       historicoPorMes[t.referencia].saldo = historicoPorMes[t.referencia].receitas - historicoPorMes[t.referencia].despesas;
 
-      // Para os Cards (Mês Selecionado)
       if (t.referencia === currentRef) {
         if (t.tipo === "entrada") receitasMes += t.valor;
         if (t.tipo === "saida") {
@@ -116,7 +154,6 @@ export default function Dashboard() {
         }
       }
 
-      // Para o Mês Anterior
       if (t.referencia === prevRef) {
         if (t.tipo === "saida") despesasMesAnterior += t.valor;
       }
@@ -139,7 +176,7 @@ export default function Dashboard() {
     const dadosGrafico = Object.values(historicoPorMes).sort((a, b) => a.name.localeCompare(b.name));
 
     return { receitasMes, despesasMes, saldoMes, recomendadoGuardar, maiorDespesa, maiorCategoria, saudeScore, dadosGrafico };
-  }, [transacoesAtuais, selectedMonth, reservaPercentual]);
+  }, [transacoesCompletas, selectedMonth, reservaPercentual]);
 
   const obterStatusSaude = (score) => {
     if (score >= 70) return { texto: "Investidor! Saldo excelente.", cor: "text-green-600", bgCor: "bg-green-500" };
@@ -176,20 +213,12 @@ export default function Dashboard() {
             </div>
 
             <div className="flex flex-col sm:flex-row items-center gap-3">
-              
-              {/* NOVO: Toggle de Visão Família / Individual */}
               {hasFamily && (
                 <div className="flex bg-gray-100 p-1 rounded-xl shadow-inner border border-gray-200 w-full sm:w-auto">
-                  <button 
-                    onClick={() => setViewMode("individual")}
-                    className={`flex-1 sm:flex-none px-4 py-1.5 text-sm font-bold rounded-lg transition-all ${viewMode === 'individual' ? 'bg-white text-blue-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-                  >
+                  <button onClick={() => setViewMode("individual")} className={`flex-1 sm:flex-none px-4 py-1.5 text-sm font-bold rounded-lg transition-all ${viewMode === 'individual' ? 'bg-white text-blue-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
                     Meu Saldo
                   </button>
-                  <button 
-                    onClick={() => setViewMode("familia")}
-                    className={`flex-1 sm:flex-none px-4 py-1.5 text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${viewMode === 'familia' ? 'bg-white text-blue-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-                  >
+                  <button onClick={() => setViewMode("familia")} className={`flex-1 sm:flex-none px-4 py-1.5 text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${viewMode === 'familia' ? 'bg-white text-blue-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
                     Família
                   </button>
@@ -266,9 +295,13 @@ export default function Dashboard() {
             <div className="w-full bg-gray-100 rounded-full h-4 overflow-hidden relative">
               <div className={`h-4 rounded-full transition-all duration-1000 ${statusSaude.bgCor}`} style={{ width: `${metrics.saudeScore}%` }}></div>
             </div>
+            <div className="flex justify-between text-xs text-gray-400 mt-2 font-semibold px-1">
+              <span>0% (Risco)</span>
+              <span>30% (Atenção)</span>
+              <span>70%+ (Investidor)</span>
+            </div>
           </div>
 
-          {/* NOVO: Gráfico Misto (Barras + Linha de Tendência) */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 md:p-6">
             <h3 className="text-base font-bold text-gray-900 mb-6">Fluxo de Caixa e Tendência de Saldo</h3>
             {metrics.dadosGrafico.length > 0 ? (
@@ -280,12 +313,8 @@ export default function Dashboard() {
                     <YAxis stroke="#6b7280" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(val) => `R$ ${val}`} />
                     <Tooltip formatter={(value) => formatCurrency(value)} contentStyle={{ borderRadius: '0.5rem', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
                     <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
-                    
-                    {/* Barras de Fluxo */}
                     <Bar dataKey="receitas" name="Receitas" fill="#22c55e" radius={[4, 4, 0, 0]} maxBarSize={40} />
                     <Bar dataKey="despesas" name="Despesas" fill="#ef4444" radius={[4, 4, 0, 0]} maxBarSize={40} />
-                    
-                    {/* Linha de Tendência (Saldo) */}
                     <Line type="monotone" dataKey="saldo" name="Saldo Final (Tendência)" stroke="#1e3a8a" strokeWidth={3} dot={{ r: 4, strokeWidth: 2 }} activeDot={{ r: 6 }} />
                   </ComposedChart>
                 </ResponsiveContainer>
