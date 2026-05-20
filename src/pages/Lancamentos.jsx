@@ -48,11 +48,9 @@ export default function Lancamentos() {
     return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
   };
 
-  // BUSCAR CATEGORIAS EXCLUSIVAS DO USUÁRIO
   const fetchCategorias = async () => {
     if (!user?.uid) return;
     try {
-      // O filtro "where" garante que ele veja APENAS as categorias que ele mesmo criou
       const q = query(collection(db, "categorias"), where("uid", "==", user.uid));
       const snap = await getDocs(q);
       const cats = [];
@@ -63,7 +61,6 @@ export default function Lancamentos() {
     }
   };
 
-  // BUSCAR LANÇAMENTOS + INJETAR RECORRÊNCIAS
   const fetchTransacoes = async () => {
     if (!user?.uid) return;
     try {
@@ -162,10 +159,9 @@ export default function Lancamentos() {
     setIsModalOpen(true);
   };
 
-const handleSubmit = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      // Prepara os dados básicos que servem tanto para criar quanto para editar
       const dataToSave = {
         ...formData,
         valor: parseFloat(formData.valor),
@@ -173,10 +169,8 @@ const handleSubmit = async (e) => {
       };
 
       if (editingId) {
-        // Se estiver EDITANDO, atualiza apenas os dados alterados (sem tocar no criadoEm)
         await updateDoc(doc(db, "financas", editingId), dataToSave);
       } else {
-        // Se for NOVO, adicionamos a data de criação exata de agora antes de salvar
         dataToSave.criadoEm = Date.now();
         await addDoc(collection(db, "financas"), dataToSave);
       }
@@ -210,7 +204,6 @@ const handleSubmit = async (e) => {
     }
   };
 
-  // Prepara as categorias do usuário, removendo duplicatas caso ele crie uma com o mesmo nome das padrões
   const categoriasPersonalizadas = categoriasUser.filter(
     catUser => !CATEGORIAS_PADRAO.map(c => c.toLowerCase()).includes(catUser.toLowerCase())
   );
@@ -250,11 +243,11 @@ const handleSubmit = async (e) => {
             </div>
           </header>
 
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="bg-white md:rounded-2xl shadow-sm border border-gray-200 overflow-hidden md:bg-white bg-transparent md:border-solid border-none md:shadow-sm shadow-none">
             {loading ? (
-              <div className="p-10 text-center text-gray-500">Carregando dados...</div>
+              <div className="p-10 text-center text-gray-500 bg-white rounded-2xl">Carregando dados...</div>
             ) : transacoes.length === 0 ? (
-              <div className="p-16 text-center flex flex-col items-center justify-center">
+              <div className="p-16 text-center flex flex-col items-center justify-center bg-white rounded-2xl">
                  <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4 text-gray-400">
                    <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                  </div>
@@ -262,82 +255,156 @@ const handleSubmit = async (e) => {
                  <button onClick={handleOpenAdd} className="mt-4 text-blue-600 font-semibold hover:underline">Adicionar o primeiro</button>
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-gray-50 border-b border-gray-200 text-xs uppercase tracking-wider text-gray-500 font-semibold">
-                      <th className="p-4">Descrição</th>
-                      <th className="p-4 hidden sm:table-cell">Categoria</th>
-                      <th className="p-4">Valor</th>
-                      <th className="p-4 text-center">Status</th>
-                      <th className="p-4 text-right">Ações</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100 text-sm">
-                    {transacoes.map((t) => (
-                      <tr key={t.id} className="hover:bg-gray-50/50 transition-colors">
-                        <td className="p-4">
-                          <p className="font-bold text-gray-900 capitalize flex items-center gap-2">
+              <>
+                {/* --- LAYOUT DESKTOP (Tabela) --- */}
+                <div className="hidden md:block overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-gray-50 border-b border-gray-200 text-xs uppercase tracking-wider text-gray-500 font-semibold">
+                        <th className="p-4">Descrição</th>
+                        <th className="p-4">Categoria</th>
+                        <th className="p-4">Valor</th>
+                        <th className="p-4 text-center">Status</th>
+                        <th className="p-4 text-right">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 text-sm">
+                      {transacoes.map((t) => (
+                        <tr key={t.id} className="hover:bg-gray-50/50 transition-colors">
+                          <td className="p-4">
+                            <p className="font-bold text-gray-900 capitalize flex items-center gap-2">
+                              {t.descricao}
+                              {t.isRecorrente && (
+                                <span className="px-2 py-0.5 bg-blue-100 text-blue-800 text-[10px] uppercase font-bold rounded-md border border-blue-200">
+                                  Recorrente
+                                </span>
+                              )}
+                            </p>
+                          </td>
+                          <td className="p-4 capitalize text-gray-600 font-medium">
+                            {t.categoria}
+                          </td>
+                          <td className="p-4 font-bold">
+                            <span className={t.tipo === "entrada" ? "text-green-600" : "text-gray-900"}>
+                              {t.tipo === "entrada" ? "+ " : "- "}
+                              {formatCurrency(t.valor)}
+                            </span>
+                          </td>
+                          <td className="p-4 text-center">
+                            {t.isRecorrente ? (
+                              <span className="px-3 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                                Automático
+                              </span>
+                            ) : t.tipo === "saida" ? (
+                              <button 
+                                onClick={() => togglePago(t.id, t.pago)}
+                                className={`px-3 py-1 rounded-full text-xs font-bold inline-flex items-center gap-1.5 transition-colors border ${
+                                  t.pago 
+                                  ? "bg-green-50 text-green-700 border-green-200 hover:bg-green-100" 
+                                  : "bg-red-50 text-red-700 border-red-200 hover:bg-red-100"
+                                }`}
+                              >
+                                <div className={`w-1.5 h-1.5 rounded-full ${t.pago ? "bg-green-500" : "bg-red-500"}`}></div>
+                                {t.pago ? "Pago" : "Pendente"}
+                              </button>
+                            ) : (
+                              <span className="px-3 py-1 rounded-full text-xs font-bold bg-gray-100 text-gray-500 border border-gray-200">
+                                Receita
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-4 text-right">
+                            {t.isRecorrente ? (
+                              <span className="text-xs text-gray-400 font-medium">Editar em Recorrências</span>
+                            ) : (
+                              <div className="space-x-2">
+                                <button onClick={() => handleOpenEdit(t)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Editar">
+                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                                </button>
+                                <button onClick={() => handleDelete(t.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Excluir">
+                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* --- LAYOUT MOBILE (Cards) --- */}
+                <div className="md:hidden flex flex-col gap-3 pb-4">
+                  {transacoes.map((t) => (
+                    <div key={t.id} className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm flex flex-col gap-3">
+                      
+                      {/* Linha 1: Info e Valor */}
+                      <div className="flex justify-between items-start gap-2">
+                        <div className="flex-1">
+                          <p className="font-bold text-gray-900 capitalize flex flex-wrap items-center gap-2 text-base leading-tight">
                             {t.descricao}
                             {t.isRecorrente && (
-                              <span className="px-2 py-0.5 bg-blue-100 text-blue-800 text-[10px] uppercase font-bold rounded-md border border-blue-200">
+                              <span className="px-2 py-0.5 bg-blue-100 text-blue-800 text-[10px] uppercase font-bold rounded-md border border-blue-200 shrink-0">
                                 Recorrente
                               </span>
                             )}
                           </p>
-                          <p className="text-xs text-gray-500 sm:hidden capitalize mt-0.5">{t.categoria}</p>
-                        </td>
-                        <td className="p-4 hidden sm:table-cell capitalize text-gray-600 font-medium">
-                          {t.categoria}
-                        </td>
-                        <td className="p-4 font-bold">
-                          <span className={t.tipo === "entrada" ? "text-green-600" : "text-gray-900"}>
+                          <p className="text-xs text-gray-500 capitalize mt-1.5 font-medium">{t.categoria}</p>
+                        </div>
+                        <div className="text-right shrink-0 mt-0.5">
+                          <p className={`text-lg font-extrabold ${t.tipo === "entrada" ? "text-green-600" : "text-gray-900"}`}>
                             {t.tipo === "entrada" ? "+ " : "- "}
                             {formatCurrency(t.valor)}
-                          </span>
-                        </td>
-                        <td className="p-4 text-center">
+                          </p>
+                        </div>
+                      </div>
+                      
+                      {/* Linha 2: Status e Ações */}
+                      <div className="flex items-center justify-between pt-3 border-t border-gray-100 mt-1">
+                        <div>
                           {t.isRecorrente ? (
-                            <span className="px-3 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                            <span className="px-3 py-1.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
                               Automático
                             </span>
                           ) : t.tipo === "saida" ? (
                             <button 
                               onClick={() => togglePago(t.id, t.pago)}
-                              className={`px-3 py-1 rounded-full text-xs font-bold inline-flex items-center gap-1.5 transition-colors border ${
+                              className={`px-3 py-1.5 rounded-full text-[11px] font-bold inline-flex items-center gap-1.5 transition-colors border ${
                                 t.pago 
-                                ? "bg-green-50 text-green-700 border-green-200 hover:bg-green-100" 
-                                : "bg-red-50 text-red-700 border-red-200 hover:bg-red-100"
+                                ? "bg-green-50 text-green-700 border-green-200 active:bg-green-100" 
+                                : "bg-red-50 text-red-700 border-red-200 active:bg-red-100"
                               }`}
                             >
                               <div className={`w-1.5 h-1.5 rounded-full ${t.pago ? "bg-green-500" : "bg-red-500"}`}></div>
                               {t.pago ? "Pago" : "Pendente"}
                             </button>
                           ) : (
-                            <span className="px-3 py-1 rounded-full text-xs font-bold bg-gray-100 text-gray-500 border border-gray-200">
+                            <span className="px-3 py-1.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600 border border-gray-200">
                               Receita
                             </span>
                           )}
-                        </td>
-                        <td className="p-4 text-right">
+                        </div>
+                        
+                        <div>
                           {t.isRecorrente ? (
-                            <span className="text-xs text-gray-400 font-medium">Editar em Recorrências</span>
+                            <span className="text-[11px] text-gray-400 font-medium italic">Edite em Recorrências</span>
                           ) : (
-                            <div className="space-x-2">
-                              <button onClick={() => handleOpenEdit(t)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Editar">
-                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                            <div className="flex gap-2">
+                              <button onClick={() => handleOpenEdit(t)} className="p-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors" title="Editar">
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
                               </button>
-                              <button onClick={() => handleDelete(t.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Excluir">
-                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                              <button onClick={() => handleDelete(t.id)} className="p-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors" title="Excluir">
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                               </button>
                             </div>
                           )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                        </div>
+                      </div>
+
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
           </div>
 
@@ -384,8 +451,6 @@ const handleSubmit = async (e) => {
 
                 <div className="col-span-2 sm:col-span-1">
                   <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Categoria</label>
-                  
-                  {/* NOVO: SELECT AGRUPADO DE CATEGORIAS */}
                   <select 
                     required 
                     value={formData.categoria} 
@@ -394,14 +459,12 @@ const handleSubmit = async (e) => {
                   >
                     <option value="" disabled>Selecione...</option>
                     
-                    {/* Grupo 1: Categorias Básicas */}
                     <optgroup label="Básicas">
                       {CATEGORIAS_PADRAO.map(cat => (
                         <option key={cat} value={cat.toLowerCase()}>{cat}</option>
                       ))}
                     </optgroup>
 
-                    {/* Grupo 2: Categorias do Usuário */}
                     {categoriasPersonalizadas.length > 0 && (
                       <optgroup label="Minhas Categorias">
                         {categoriasPersonalizadas.map((cat, idx) => (
@@ -410,7 +473,6 @@ const handleSubmit = async (e) => {
                       </optgroup>
                     )}
 
-                    {/* Grupo Extra: Caso esteja editando um lançamento com categoria que não existe mais */}
                     {formData.categoria && 
                      !CATEGORIAS_PADRAO.map(c => c.toLowerCase()).includes(formData.categoria.toLowerCase()) && 
                      !categoriasUser.map(c => c.toLowerCase()).includes(formData.categoria.toLowerCase()) && (
@@ -419,7 +481,6 @@ const handleSubmit = async (e) => {
                        </optgroup>
                     )}
                   </select>
-
                 </div>
               </div>
 

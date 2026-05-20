@@ -11,9 +11,8 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
   
-  // Dados puros do banco
   const [allTransacoes, setAllTransacoes] = useState([]);
-  const [allRecorrencias, setAllRecorrencias] = useState([]); // NOVO: Armazena as recorrências
+  const [allRecorrencias, setAllRecorrencias] = useState([]);
   
   const [hasFamily, setHasFamily] = useState(false);
   const [viewMode, setViewMode] = useState("individual");
@@ -61,12 +60,10 @@ export default function Dashboard() {
         let todasRec = [];
 
         for (const chunk of chunks) {
-            // Busca lançamentos normais
             const qTr = query(collection(db, "financas"), where("uid", "in", chunk));
             const snapTr = await getDocs(qTr);
             snapTr.forEach(d => todasTr.push({ id: d.id, ...d.data() }));
 
-            // Busca recorrências
             const qRec = query(collection(db, "recorrencias"), where("uid", "in", chunk));
             const snapRec = await getDocs(qRec);
             snapRec.forEach(d => todasRec.push({ id: d.id, ...d.data() }));
@@ -84,12 +81,10 @@ export default function Dashboard() {
     fetchDados();
   }, [user]);
 
-  // NOVO: Injeta as Recorrências matematicamente dentro dos lançamentos da Dashboard
   const transacoesCompletas = useMemo(() => {
     const trFiltradas = viewMode === "familia" ? allTransacoes : allTransacoes.filter(t => t.uid === user?.uid);
     const recFiltradas = viewMode === "familia" ? allRecorrencias : allRecorrencias.filter(r => r.uid === user?.uid);
 
-    // Identifica todos os meses que precisam ser calculados (os que já têm lançamento + Mês Selecionado + Mês Anterior)
     const [year, month] = selectedMonth.split("-").map(Number);
     const dataAnterior = new Date(year, month - 2, 1); 
     const prevRef = `${dataAnterior.getFullYear()}-${String(dataAnterior.getMonth() + 1).padStart(2, "0")}`;
@@ -106,13 +101,12 @@ export default function Dashboard() {
         const [refY, refM] = refMes.split("-").map(Number);
         const monthDiff = (refY - startYear) * 12 + (refM - startMonth);
 
-        // Se a conta já começou nesta data
         if (monthDiff >= 0) {
           if (rec.tipo === "fixa" || (rec.tipo === "parcelada" && rec.parcelaAtual + monthDiff <= rec.parcelasTotais)) {
             transacoesFinais.push({
               id: `rec-${rec.id}-${refMes}`,
               valor: rec.valor,
-              tipo: "saida", // Recorrências são saídas
+              tipo: "saida", 
               categoria: rec.categoria,
               referencia: refMes,
               descricao: rec.descricao
@@ -125,7 +119,6 @@ export default function Dashboard() {
     return transacoesFinais;
   }, [allTransacoes, allRecorrencias, viewMode, user, selectedMonth]);
 
-  // Cálculos das Métricas (Agora usando o transacoesCompletas que inclui as recorrências)
   const metrics = useMemo(() => {
     const currentRef = selectedMonth;
     const [year, month] = selectedMonth.split("-").map(Number);
@@ -167,6 +160,12 @@ export default function Dashboard() {
     const saldoMes = receitasMes - despesasMes;
     const recomendadoGuardar = saldoMes > 0 ? saldoMes * (reservaPercentual / 100) : 0;
 
+    // NOVO: Cálculo da variação de despesas
+    let variacaoDespesas = 0;
+    if (despesasMesAnterior > 0) {
+      variacaoDespesas = ((despesasMes - despesasMesAnterior) / despesasMesAnterior) * 100;
+    }
+
     let saudeScore = 0;
     if (receitasMes > 0) {
       const gastoPercentual = (despesasMes / receitasMes) * 100;
@@ -175,7 +174,10 @@ export default function Dashboard() {
 
     const dadosGrafico = Object.values(historicoPorMes).sort((a, b) => a.name.localeCompare(b.name));
 
-    return { receitasMes, despesasMes, saldoMes, recomendadoGuardar, maiorDespesa, maiorCategoria, saudeScore, dadosGrafico };
+    return { 
+      receitasMes, despesasMes, saldoMes, recomendadoGuardar, maiorDespesa, 
+      maiorCategoria, variacaoDespesas, saudeScore, dadosGrafico 
+    };
   }, [transacoesCompletas, selectedMonth, reservaPercentual]);
 
   const obterStatusSaude = (score) => {
@@ -246,9 +248,17 @@ export default function Dashboard() {
               <p className="text-3xl font-bold text-green-600 break-words">{formatCurrency(metrics.receitasMes)}</p>
             </div>
 
+            {/* CARD ATUALIZADO: Despesas agora inclui a % de Variação Novamente */}
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
               <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Despesas</h3>
-              <p className="text-3xl font-bold text-red-500 break-words">{formatCurrency(metrics.despesasMes)}</p>
+              <div className="flex flex-col xl:flex-row xl:items-baseline gap-2">
+                <p className="text-3xl font-bold text-red-500 break-words">{formatCurrency(metrics.despesasMes)}</p>
+                {metrics.variacaoDespesas !== 0 && (
+                  <span className={`text-xs font-bold px-2 py-1 rounded-md w-fit ${metrics.variacaoDespesas > 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                    {metrics.variacaoDespesas > 0 ? '▲' : '▼'} {Math.abs(metrics.variacaoDespesas).toFixed(1)}% vs anterior
+                  </span>
+                )}
+              </div>
             </div>
 
             <div className="bg-green-50 p-6 rounded-2xl shadow-sm border border-green-200 relative">
