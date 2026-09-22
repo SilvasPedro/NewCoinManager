@@ -3,26 +3,49 @@ import { useState, useEffect, useMemo } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import Sidebar from "../components/Sidebar";
 import { db } from "../config/firebase";
-import { 
-  collection, query, where, getDocs, 
-  addDoc, updateDoc, deleteDoc, doc, writeBatch 
+import {
+  collection,
+  query,
+  where,
+  getDocs,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+  writeBatch,
 } from "firebase/firestore";
-import toast from "react-hot-toast"; // NOVO: Importação do Toast
+import toast from "react-hot-toast";
+
+import RecorrenciasHeader from "../components/recorrencias/RecorrenciasHeader";
+import RecorrenciasSummaryCards from "../components/recorrencias/RecorrenciasSummaryCards";
+import RecorrenciasFilterBar from "../components/recorrencias/RecorrenciasFilterBar";
+import RecorrenciasGridView from "../components/recorrencias/RecorrenciasGridView";
+import RecorrenciasTableView from "../components/recorrencias/RecorrenciasTableView";
+import RecorrenciasCategoryGroupView from "../components/recorrencias/RecorrenciasCategoryGroupView";
+import RecorrenciaModal from "../components/recorrencias/RecorrenciaModal";
 
 export default function Recorrencias() {
   const { user } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
-  
-  const [recorrencias, setRecorrencias] = useState([]);
-  const [loading, setLoading] = useState(true);
 
+  const [recorrencias, setRecorrencias] = useState([]);
+  const [categoriasPersonalizadas, setCategoriasPersonalizadas] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  // Modais
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  
-  // NOVO: Estados para os Modais de Exclusão
   const [itemToDelete, setItemToDelete] = useState(null);
   const [isDeleteAllModalOpen, setIsDeleteAllModalOpen] = useState(false);
-  
+
+  // Filtros e Visualização
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterTipo, setFilterTipo] = useState("all"); // 'all' | 'fixa' | 'parcelada'
+  const [filterTransacao, setFilterTransacao] = useState("all"); // 'all' | 'entrada' | 'saida'
+  const [sortBy, setSortBy] = useState("data-desc");
+  const [viewMode, setViewMode] = useState("cards"); // 'cards' | 'tabela' | 'categorias'
+
   const [formData, setFormData] = useState({
     descricao: "",
     valor: "",
@@ -31,121 +54,241 @@ export default function Recorrencias() {
     tipoTransacao: "saida",
     parcelaAtual: 1,
     parcelasTotais: 2,
-    dataInicio: ""
+    dataInicio: "",
   });
 
   const formatCurrency = (value) => {
-    return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
+    return new Intl.NumberFormat("pt-BR", {
+      style: "currency",
+      currency: "BRL",
+    }).format(value || 0);
   };
 
-  const fetchRecorrencias = async () => {
-    if (!user?.uid) return;
-    try {
-      setLoading(true);
-      const q = query(collection(db, "recorrencias"), where("uid", "==", user.uid));
-      const querySnapshot = await getDocs(q);
-      const dados = [];
-      querySnapshot.forEach((doc) => {
-        dados.push({ id: doc.id, ...doc.data() });
-      });
-      dados.sort((a, b) => b.criadoEm - a.criadoEm);
-      setRecorrencias(dados);
-    } catch (error) {
-      console.error("Erro ao buscar recorrências:", error);
-      toast.error("Falha ao carregar recorrências."); // NOVO
-    } finally {
-      setLoading(false);
-    }
+  const calcularPrevisaoFim = (dataInicio, parcelaAtual, parcelasTotais) => {
+    if (!dataInicio) return "Desconhecido";
+    const [ano, mes] = dataInicio.split("-").map(Number);
+    const mesesRestantes = Math.max(0, (parcelasTotais || 0) - (parcelaAtual || 0));
+    const dataFim = new Date(ano, mes - 1 + mesesRestantes, 1);
+    return dataFim.toLocaleDateString("pt-BR", { month: "short", year: "numeric" });
   };
 
+  // Carregar dados
   useEffect(() => {
-    fetchRecorrencias();
-  }, [user]);
+    let isMounted = true;
 
+    async function loadData() {
+      if (!user?.uid) return;
+      try {
+        setLoading(true);
+
+        // 1. Recorrências
+        const qRec = query(collection(db, "recorrencias"), where("uid", "==", user.uid));
+        const snapRec = await getDocs(qRec);
+        const dados = [];
+        snapRec.forEach((d) => {
+          dados.push({ id: d.id, ...d.data() });
+        });
+        dados.sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0));
+
+        // 2. Categorias Personalizadas
+        const qCat = query(collection(db, "categorias"), where("uid", "==", user.uid));
+        const snapCat = await getDocs(qCat);
+        const cats = [];
+        snapCat.forEach((d) => {
+          if (d.data().nome) cats.push(d.data().nome);
+        });
+
+        if (isMounted) {
+          setRecorrencias(dados);
+          setCategoriasPersonalizadas(cats);
+        }
+      } catch (error) {
+        console.error("Erro ao carregar dados:", error);
+        toast.error("Falha ao carregar recorrências.");
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user, refreshKey]);
+
+  // Métricas Globais dos Cards
   const metrics = useMemo(() => {
     let receitasMensais = 0;
     let custoFixoMensal = 0;
     let custoParceladoMensal = 0;
     let dividaTotalRestante = 0;
+    let qtdFixas = 0;
+    let qtdParceladas = 0;
 
-    recorrencias.forEach(item => {
+    recorrencias.forEach((item) => {
+      const val = parseFloat(item.valor) || 0;
       if (item.tipoTransacao === "entrada") {
-        receitasMensais += item.valor;
+        receitasMensais += val;
       } else {
         if (item.tipo === "fixa") {
-          custoFixoMensal += item.valor;
+          custoFixoMensal += val;
+          qtdFixas += 1;
         } else if (item.tipo === "parcelada") {
-          custoParceladoMensal += item.valor;
-          const parcelasRestantes = item.parcelasTotais - item.parcelaAtual;
-          if (parcelasRestantes > 0) {
-            dividaTotalRestante += (parcelasRestantes * item.valor);
-          }
+          custoParceladoMensal += val;
+          qtdParceladas += 1;
+          const parcelasRestantes = Math.max(0, (item.parcelasTotais || 0) - (item.parcelaAtual || 0));
+          dividaTotalRestante += parcelasRestantes * val;
         }
       }
     });
 
-    return { receitasMensais, custoFixoMensal, custoParceladoMensal, dividaTotalRestante };
+    return {
+      receitasMensais,
+      custoFixoMensal,
+      custoParceladoMensal,
+      dividaTotalRestante,
+      qtdFixas,
+      qtdParceladas,
+    };
   }, [recorrencias]);
 
-  const calcularPrevisaoFim = (dataInicio, parcelaAtual, parcelasTotais) => {
-    if (!dataInicio) return "Desconhecido";
-    const [ano, mes] = dataInicio.split("-").map(Number);
-    const mesesRestantes = parcelasTotais - parcelaAtual;
-    const dataFim = new Date(ano, (mes - 1) + mesesRestantes, 1);
-    return dataFim.toLocaleDateString('pt-BR', { month: 'short', year: 'numeric' });
+  // Lista Filtrada e Ordenada
+  const filteredRecorrencias = useMemo(() => {
+    let result = [...recorrencias];
+
+    // Busca textual
+    if (searchTerm.trim()) {
+      const term = searchTerm.toLowerCase();
+      result = result.filter(
+        (item) =>
+          item.descricao?.toLowerCase().includes(term) ||
+          item.categoria?.toLowerCase().includes(term)
+      );
+    }
+
+    // Filtro por tipo (fixa vs parcelada)
+    if (filterTipo !== "all") {
+      result = result.filter((item) => item.tipo === filterTipo);
+    }
+
+    // Filtro por transação (entrada vs saída)
+    if (filterTransacao !== "all") {
+      result = result.filter((item) => item.tipoTransacao === filterTransacao);
+    }
+
+    // Ordenação
+    result.sort((a, b) => {
+      if (sortBy === "valor-desc") {
+        return (b.valor || 0) - (a.valor || 0);
+      }
+      if (sortBy === "valor-asc") {
+        return (a.valor || 0) - (b.valor || 0);
+      }
+      if (sortBy === "nome-asc") {
+        return (a.descricao || "").localeCompare(b.descricao || "");
+      }
+      if (sortBy === "progresso-desc") {
+        const progA = a.tipo === "parcelada" ? (a.parcelaAtual || 0) / (a.parcelasTotais || 1) : 0;
+        const progB = b.tipo === "parcelada" ? (b.parcelaAtual || 0) / (b.parcelasTotais || 1) : 0;
+        return progB - progA;
+      }
+      // data-desc (default)
+      return (b.criadoEm || 0) - (a.criadoEm || 0);
+    });
+
+    return result;
+  }, [recorrencias, searchTerm, filterTipo, filterTransacao, sortBy]);
+
+  const hasActiveFilters =
+    searchTerm.trim() !== "" ||
+    filterTipo !== "all" ||
+    filterTransacao !== "all" ||
+    sortBy !== "data-desc";
+
+  const handleResetFilters = () => {
+    setSearchTerm("");
+    setFilterTipo("all");
+    setFilterTransacao("all");
+    setSortBy("data-desc");
   };
 
+  // Abrir Modal
   const handleOpenAdd = () => {
-    setFormData({ descricao: "", valor: "", categoria: "", tipo: "fixa", tipoTransacao: "saida", parcelaAtual: 1, parcelasTotais: 2, dataInicio: "" });
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    setFormData({
+      descricao: "",
+      valor: "",
+      categoria: "outros",
+      tipo: "fixa",
+      tipoTransacao: "saida",
+      parcelaAtual: 1,
+      parcelasTotais: 2,
+      dataInicio: currentMonth,
+    });
     setEditingId(null);
     setIsModalOpen(true);
   };
 
   const handleOpenEdit = (item) => {
     setFormData({
-      descricao: item.descricao,
-      valor: item.valor,
-      categoria: item.categoria,
-      tipo: item.tipo,
+      descricao: item.descricao || "",
+      valor: item.valor || "",
+      categoria: item.categoria || "outros",
+      tipo: item.tipo || "fixa",
       tipoTransacao: item.tipoTransacao || "saida",
       parcelaAtual: item.parcelaAtual || 1,
       parcelasTotais: item.parcelasTotais || 2,
-      dataInicio: item.dataInicio || ""
+      dataInicio: item.dataInicio || "",
     });
     setEditingId(item.id);
     setIsModalOpen(true);
   };
 
+  // Submissão do Formulário
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!formData.descricao.trim()) {
+      toast.error("Informe uma descrição");
+      return;
+    }
+
     try {
       const dataToSave = {
-        ...formData,
-        valor: parseFloat(formData.valor),
-        parcelaAtual: parseInt(formData.parcelaAtual),
-        parcelasTotais: parseInt(formData.parcelasTotais),
+        descricao: formData.descricao.trim(),
+        valor: parseFloat(formData.valor) || 0,
+        categoria: (formData.categoria || "outros").toLowerCase(),
+        tipo: formData.tipo,
+        tipoTransacao: formData.tipoTransacao,
+        parcelaAtual: parseInt(formData.parcelaAtual) || 1,
+        parcelasTotais: parseInt(formData.parcelasTotais) || 2,
+        dataInicio: formData.dataInicio || "",
         uid: user.uid,
       };
 
-      if (!editingId) dataToSave.criadoEm = Date.now();
+      if (!editingId) {
+        dataToSave.criadoEm = Date.now();
+      }
 
       if (editingId) {
         await updateDoc(doc(db, "recorrencias", editingId), dataToSave);
-        toast.success("Recorrência atualizada!"); // NOVO
+        toast.success("Recorrência atualizada com sucesso!");
       } else {
         await addDoc(collection(db, "recorrencias"), dataToSave);
-        toast.success("Nova recorrência criada!"); // NOVO
+        toast.success("Nova recorrência cadastrada!");
       }
-      
+
       setIsModalOpen(false);
-      fetchRecorrencias();
+      setRefreshKey((k) => k + 1);
     } catch (error) {
       console.error("Erro ao salvar:", error);
-      toast.error("Erro ao salvar os dados."); // NOVO
+      toast.error("Erro ao salvar os dados.");
     }
   };
 
-  // NOVO: Funções de Exclusão Individual
+  // Exclusão Individual
   const confirmDelete = (id) => {
     setItemToDelete(id);
   };
@@ -155,7 +298,7 @@ export default function Recorrencias() {
     try {
       await deleteDoc(doc(db, "recorrencias", itemToDelete));
       toast.success("Recorrência excluída!");
-      fetchRecorrencias();
+      setRefreshKey((k) => k + 1);
     } catch (error) {
       console.error("Erro ao deletar:", error);
       toast.error("Erro ao excluir o item.");
@@ -164,7 +307,7 @@ export default function Recorrencias() {
     }
   };
 
-  // NOVO: Funções de Excluir Tudo
+  // Exclusão Total em Lote
   const confirmDeleteAll = () => {
     if (recorrencias.length === 0) return;
     setIsDeleteAllModalOpen(true);
@@ -180,7 +323,7 @@ export default function Recorrencias() {
       });
       await batch.commit();
       toast.success("Todas as recorrências foram apagadas!");
-      fetchRecorrencias();
+      setRefreshKey((k) => k + 1);
     } catch (error) {
       console.error("Erro ao apagar tudo:", error);
       toast.error("Erro ao tentar limpar a lista.");
@@ -191,281 +334,179 @@ export default function Recorrencias() {
   };
 
   return (
-    <div className="flex h-screen bg-gray-50 overflow-hidden">
+    <div className="flex h-screen bg-slate-100/60 overflow-hidden font-sans text-gray-900">
       <Sidebar mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />
 
-      <main className="flex-1 overflow-y-auto p-4 md:p-8 relative">
-        <div className="max-w-7xl mx-auto space-y-6">
-          
-          <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white md:bg-transparent p-4 md:p-0 rounded-2xl md:rounded-none shadow-sm md:shadow-none border md:border-none border-gray-200">
-            <div className="flex items-center gap-4">
-              <button onClick={() => setMobileOpen(true)} className="md:hidden p-2 text-gray-600 bg-gray-100 rounded-lg">
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
-              </button>
-              <div>
-                <h2 className="text-2xl md:text-3xl font-extrabold text-gray-900 tracking-tight">Recorrências</h2>
-                <p className="text-gray-500 mt-1 text-sm">Gerencie ganhos e contas recorrentes.</p>
-              </div>
-            </div>
+      <main className="flex-1 overflow-y-auto p-3 sm:p-5 md:p-8 pb-28 lg:pb-8 relative">
+        <div className="max-w-7xl mx-auto space-y-5 pb-8">
+          {/* HEADER PRINCIPAL */}
+          <RecorrenciasHeader
+            totalItems={recorrencias.length}
+            onOpenAdd={handleOpenAdd}
+            onConfirmDeleteAll={confirmDeleteAll}
+            onOpenMobileMenu={() => setMobileOpen(true)}
+          />
 
-            <div className="flex items-center gap-3">
-              <button onClick={confirmDeleteAll} disabled={recorrencias.length === 0} className="px-4 py-2.5 bg-red-50 text-red-600 hover:bg-red-100 font-bold rounded-xl transition-colors disabled:opacity-50 hidden sm:block">
-                Apagar Tudo
-              </button>
-              <button onClick={handleOpenAdd} className="flex items-center justify-center gap-2 px-5 py-2.5 bg-blue-950 hover:bg-black text-white font-semibold rounded-xl transition-all shadow-md">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/></svg>
-                Nova Recorrência
-              </button>
-            </div>
-          </header>
+          {/* CARDS DE RESUMO COM EFEITO DE VIDRO */}
+          <RecorrenciasSummaryCards
+            receitasMensais={metrics.receitasMensais}
+            custoFixoMensal={metrics.custoFixoMensal}
+            custoParceladoMensal={metrics.custoParceladoMensal}
+            dividaTotalRestante={metrics.dividaTotalRestante}
+            qtdFixas={metrics.qtdFixas}
+            qtdParceladas={metrics.qtdParceladas}
+            formatCurrency={formatCurrency}
+          />
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
-              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Receitas (Mês)</h3>
-              <p className="text-3xl font-bold text-green-600">{formatCurrency(metrics.receitasMensais)}</p>
-            </div>
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
-              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Despesas Fixas</h3>
-              <p className="text-3xl font-bold text-gray-900">{formatCurrency(metrics.custoFixoMensal)}</p>
-            </div>
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
-              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Parcelas (Mês)</h3>
-              <p className="text-3xl font-bold text-orange-500">{formatCurrency(metrics.custoParceladoMensal)}</p>
-            </div>
-            <div className="bg-blue-950 p-6 rounded-2xl shadow-lg border border-blue-900 text-white">
-              <h3 className="text-sm font-semibold text-blue-200 uppercase tracking-wider mb-2">Dívida Restante</h3>
-              <p className="text-3xl font-bold">{formatCurrency(metrics.dividaTotalRestante)}</p>
-            </div>
-          </div>
+          {/* BARRA DE FILTROS E SELEÇÃO DE VISUALIZAÇÃO */}
+          <RecorrenciasFilterBar
+            searchTerm={searchTerm}
+            setSearchTerm={setSearchTerm}
+            filterTipo={filterTipo}
+            setFilterTipo={setFilterTipo}
+            filterTransacao={filterTransacao}
+            setFilterTransacao={setFilterTransacao}
+            sortBy={sortBy}
+            setSortBy={setSortBy}
+            viewMode={viewMode}
+            setViewMode={setViewMode}
+            onResetFilters={handleResetFilters}
+            hasActiveFilters={hasActiveFilters}
+            totalResultsCount={filteredRecorrencias.length}
+          />
 
+          {/* CONTEÚDO PRINCIPAL COM MÚLTIPLAS VISUALIZAÇÕES */}
           {loading ? (
-            <div className="text-center p-10 text-gray-500">Carregando dados...</div>
-          ) : recorrencias.length === 0 ? (
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-16 text-center">
-              <p className="text-gray-500 font-medium">Nenhuma recorrência cadastrada.</p>
+            <div className="flex flex-col items-center justify-center p-12 bg-white/70 backdrop-blur-md rounded-2xl border border-gray-200/80 shadow-xs">
+              <div className="w-8 h-8 border-4 border-blue-900 border-t-transparent rounded-full animate-spin mb-3"></div>
+              <p className="text-gray-500 font-semibold text-xs">
+                Carregando suas recorrências...
+              </p>
             </div>
+          ) : viewMode === "tabela" ? (
+            <RecorrenciasTableView
+              items={filteredRecorrencias}
+              onEdit={handleOpenEdit}
+              onDelete={confirmDelete}
+              formatCurrency={formatCurrency}
+              calcularPrevisaoFim={calcularPrevisaoFim}
+            />
+          ) : viewMode === "categorias" ? (
+            <RecorrenciasCategoryGroupView
+              items={filteredRecorrencias}
+              onEdit={handleOpenEdit}
+              onDelete={confirmDelete}
+              formatCurrency={formatCurrency}
+              calcularPrevisaoFim={calcularPrevisaoFim}
+            />
           ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {recorrencias.map((item) => {
-                const isEntrada = item.tipoTransacao === "entrada";
-                const isParcelada = item.tipo === "parcelada";
-                const progresso = isParcelada ? (item.parcelaAtual / item.parcelasTotais) * 100 : 100;
-                
-                const parcelasRestantes = isParcelada ? item.parcelasTotais - item.parcelaAtual : 0;
-                const valorTotalRestanteDoItem = parcelasRestantes * item.valor;
-                
-                return (
-                  <div key={item.id} className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 flex flex-col hover:shadow-md transition-shadow">
-                    
-                    <div className="flex justify-between items-start mb-4">
-                      <div>
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className={`px-2.5 py-1 rounded-md text-xs font-bold uppercase tracking-wider ${isEntrada ? 'bg-green-100 text-green-800' : isParcelada ? 'bg-orange-100 text-orange-800' : 'bg-blue-100 text-blue-800'}`}>
-                            {isEntrada ? 'Receita Fixa' : isParcelada ? 'Despesa Parcelada' : 'Despesa Fixa'}
-                          </span>
-                          <span className="text-sm text-gray-400 font-medium capitalize">{item.categoria}</span>
-                        </div>
-                        <h3 className="text-xl font-bold text-gray-900 capitalize">{item.descricao}</h3>
-                      </div>
-                      <div className="flex gap-1 shrink-0">
-                        <button onClick={() => handleOpenEdit(item)} className="p-1.5 text-gray-400 hover:text-blue-600 bg-gray-50 hover:bg-blue-50 rounded-lg"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg></button>
-                        {/* NOVO: Usando a função confirmDelete */}
-                        <button onClick={() => confirmDelete(item.id)} className="p-1.5 text-gray-400 hover:text-red-600 bg-gray-50 hover:bg-red-50 rounded-lg"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg></button>
-                      </div>
-                    </div>
-
-                    <div className="flex items-end justify-between mb-4">
-                      <div>
-                        <p className="text-xs text-gray-500 font-semibold uppercase mb-1">Valor Mensal</p>
-                        <p className={`text-2xl font-extrabold ${isEntrada ? 'text-green-600' : 'text-red-600'}`}>
-                          {isEntrada ? '+ ' : '- '}
-                          {formatCurrency(item.valor)}
-                        </p>
-                      </div>
-                      
-                      {isParcelada && (
-                        <div className="text-right">
-                          <p className="text-xs text-gray-500 font-semibold uppercase mb-1">Faltam</p>
-                          <p className="text-lg font-bold text-gray-900">{parcelasRestantes}x <span className="text-sm font-medium text-gray-500">de {formatCurrency(item.valor)}</span></p>
-                          <p className="text-xs font-bold text-red-500 mt-0.5">Restante: {formatCurrency(valorTotalRestanteDoItem)}</p>
-                        </div>
-                      )}
-                    </div>
-
-                    {isParcelada ? (
-                      <div className="mt-auto pt-4 border-t border-gray-100">
-                        <div className="flex justify-between text-sm font-bold text-gray-700 mb-2">
-                          <span>Parcela {item.parcelaAtual} de {item.parcelasTotais}</span>
-                          <span className="text-gray-400 font-medium">Fim: <span className="text-gray-700 capitalize">{calcularPrevisaoFim(item.dataInicio, item.parcelaAtual, item.parcelasTotais)}</span></span>
-                        </div>
-                        <div className="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden">
-                          <div className="bg-orange-500 h-2.5 rounded-full transition-all duration-500" style={{ width: `${progresso}%` }}></div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mt-auto pt-4 border-t border-gray-100 flex justify-between items-center text-sm">
-                        <span className="text-gray-500 font-medium">Recorrência Mensal Fixa</span>
-                        {item.dataInicio && <span className="font-bold text-gray-700 text-xs bg-gray-100 px-2 py-1 rounded">Desde: {item.dataInicio}</span>}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            <RecorrenciasGridView
+              items={filteredRecorrencias}
+              onEdit={handleOpenEdit}
+              onDelete={confirmDelete}
+              formatCurrency={formatCurrency}
+              calcularPrevisaoFim={calcularPrevisaoFim}
+            />
           )}
         </div>
       </main>
 
-      {/* MODAL DE ADICIONAR / EDITAR */}
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-gray-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all">
-            <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-              <h3 className="text-xl font-bold text-gray-900">{editingId ? "Editar Recorrência" : "Nova Recorrência"}</h3>
-              <button onClick={() => setIsModalOpen(false)} className="text-gray-400 hover:text-gray-700 bg-white p-1 rounded-full"><svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg></button>
-            </div>
-            
-            <form onSubmit={handleSubmit} className="p-6 space-y-5">
-              
-              <div className="flex gap-4 p-1 bg-gray-100 rounded-xl">
-                <label className={`flex-1 text-center py-2 rounded-lg cursor-pointer text-sm font-bold transition-colors ${formData.tipoTransacao === 'saida' ? 'bg-white text-red-600 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}>
-                  <input type="radio" className="hidden" checked={formData.tipoTransacao === 'saida'} onChange={() => setFormData({...formData, tipoTransacao: 'saida'})} />
-                  Despesa
-                </label>
-                <label className={`flex-1 text-center py-2 rounded-lg cursor-pointer text-sm font-bold transition-colors ${formData.tipoTransacao === 'entrada' ? 'bg-white text-green-600 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}>
-                  <input type="radio" className="hidden" checked={formData.tipoTransacao === 'entrada'} onChange={() => setFormData({...formData, tipoTransacao: 'entrada'})} />
-                  Receita
-                </label>
-              </div>
+      {/* MODAL DE ADICIONAR / EDITAR RECORRÊNCIA */}
+      <RecorrenciaModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        formData={formData}
+        setFormData={setFormData}
+        editingId={editingId}
+        onSubmit={handleSubmit}
+        categoriasPersonalizadas={categoriasPersonalizadas}
+        formatCurrency={formatCurrency}
+        calcularPrevisaoFim={calcularPrevisaoFim}
+      />
 
-              <div className="flex gap-4 p-1 bg-gray-50 rounded-xl border border-gray-100">
-                <label className={`flex-1 text-center py-1.5 rounded-lg cursor-pointer text-sm font-bold transition-colors ${formData.tipo === 'fixa' ? 'bg-white text-blue-800 shadow-sm border border-gray-200' : 'text-gray-400 hover:text-gray-700'}`}>
-                  <input type="radio" className="hidden" checked={formData.tipo === 'fixa'} onChange={() => setFormData({...formData, tipo: 'fixa'})} />
-                  Valor Fixo
-                </label>
-                <label className={`flex-1 text-center py-1.5 rounded-lg cursor-pointer text-sm font-bold transition-colors ${formData.tipo === 'parcelada' ? 'bg-white text-orange-600 shadow-sm border border-gray-200' : 'text-gray-400 hover:text-gray-700'}`}>
-                  <input type="radio" className="hidden" checked={formData.tipo === 'parcelada'} onChange={() => setFormData({...formData, tipo: 'parcelada'})} />
-                  Parcelado
-                </label>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Descrição</label>
-                <input required type="text" value={formData.descricao} onChange={(e) => setFormData({...formData, descricao: e.target.value})} placeholder={formData.tipoTransacao === 'entrada' ? "Ex: Salário, Aluguel Recebido..." : "Ex: Aluguel, Celular novo..."} className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Valor Mensal (R$)</label>
-                  <input required type="number" step="0.01" min="0.01" value={formData.valor} onChange={(e) => setFormData({...formData, valor: e.target.value})} placeholder="0,00" className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 font-bold" />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Categoria</label>
-                  <input required type="text" value={formData.categoria} onChange={(e) => setFormData({...formData, categoria: e.target.value})} placeholder={formData.tipoTransacao === 'entrada' ? "Ex: Renda" : "Ex: Moradia"} className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-              </div>
-
-              {formData.tipo === "parcelada" && (
-                <div className="grid grid-cols-2 gap-4 p-4 bg-orange-50 rounded-xl border border-orange-100">
-                  <div>
-                    <label className="block text-xs font-semibold text-orange-800 uppercase mb-1">Parcela Atual</label>
-                    <input required type="number" min="1" value={formData.parcelaAtual} onChange={(e) => setFormData({...formData, parcelaAtual: e.target.value})} className="w-full px-3 py-2 border border-orange-200 rounded-lg outline-none focus:ring-2 focus:ring-orange-500 text-center font-bold" />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-orange-800 uppercase mb-1">Total de Parcelas</label>
-                    <input required type="number" min="2" value={formData.parcelasTotais} onChange={(e) => setFormData({...formData, parcelasTotais: e.target.value})} className="w-full px-3 py-2 border border-orange-200 rounded-lg outline-none focus:ring-2 focus:ring-orange-500 text-center font-bold" />
-                  </div>
-                </div>
-              )}
-
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">
-                  {formData.tipo === 'parcelada' ? "Mês da 1ª Parcela" : "Mês de Início"}
-                </label>
-                <input required type="month" value={formData.dataInicio} onChange={(e) => setFormData({...formData, dataInicio: e.target.value})} className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 font-medium" />
-              </div>
-
-              <div className="pt-6 border-t border-gray-100">
-                <button type="submit" className="w-full py-3.5 bg-blue-950 hover:bg-black text-white font-bold rounded-xl shadow-lg transition-all">
-                  {editingId ? "Salvar Alterações" : "Adicionar Recorrência"}
-                </button>
-              </div>
-            </form>
-
-          </div>
-        </div>
-      )}
-
-      {/* NOVO: MODAL DE CONFIRMAÇÃO DE EXCLUSÃO INDIVIDUAL */}
+      {/* MODAL DE CONFIRMAÇÃO DE EXCLUSÃO INDIVIDUAL COM BACKDROP BLUR */}
       {itemToDelete && (
-        <div className="fixed inset-0 bg-gray-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden transform transition-all p-6 text-center">
-            
-            <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4 text-red-600 border border-red-100">
-              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white/95 backdrop-blur-xl rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden transform transition-all p-6 text-center border border-white/60">
+            <div className="w-14 h-14 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-3 text-rose-600 border border-rose-100">
+              <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                />
               </svg>
             </div>
-            
-            <h3 className="text-xl font-bold text-gray-900 mb-2">Excluir Recorrência?</h3>
-            <p className="text-gray-500 text-sm mb-6">
-              Ela deixará de ser projetada no seu orçamento mensal a partir de agora.
+
+            <h3 className="text-lg font-bold text-gray-900 mb-1.5">Excluir Recorrência?</h3>
+            <p className="text-gray-500 text-xs mb-5">
+              Ela deixará de ser projetada no seu fluxo financeiro mensal a partir de agora.
             </p>
-            
-            <div className="flex gap-3">
-              <button 
-                onClick={() => setItemToDelete(null)} 
-                className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-all"
+
+            <div className="flex gap-2.5">
+              <button
+                type="button"
+                onClick={() => setItemToDelete(null)}
+                className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-all text-xs cursor-pointer"
               >
                 Cancelar
               </button>
-              <button 
-                onClick={executeDelete} 
-                className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-lg transition-all"
+              <button
+                type="button"
+                onClick={executeDelete}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl shadow-md transition-all text-xs cursor-pointer"
               >
                 Sim, excluir
               </button>
             </div>
-
           </div>
         </div>
       )}
 
-      {/* NOVO: MODAL DE CONFIRMAÇÃO DE EXCLUIR TUDO (LOTE) */}
+      {/* MODAL DE CONFIRMAÇÃO DE EXCLUIR TUDO (LOTE) */}
       {isDeleteAllModalOpen && (
-        <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all p-8 text-center border-2 border-red-100">
-            
-            <div className="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-5 text-red-600 shadow-inner">
-              <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white/95 backdrop-blur-xl rounded-3xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all p-7 text-center border-2 border-rose-100">
+            <div className="w-16 h-16 bg-rose-100 rounded-full flex items-center justify-center mx-auto mb-4 text-rose-600">
+              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                />
               </svg>
             </div>
-            
-            <h3 className="text-2xl font-black text-gray-900 mb-2 uppercase tracking-wide">Atenção!</h3>
-            <p className="text-gray-600 font-medium mb-8">
-              Você está prestes a <span className="text-red-600 font-bold">APAGAR TODAS</span> as suas recorrências de uma vez. Essa ação <strong className="text-gray-900">não pode ser desfeita</strong>. Tem certeza?
+
+            <h3 className="text-xl font-black text-gray-900 mb-2 uppercase tracking-wide">
+              Atenção Crítica!
+            </h3>
+            <p className="text-gray-600 text-xs sm:text-sm font-medium mb-6">
+              Você está prestes a <span className="text-rose-600 font-bold">APAGAR TODAS</span> as
+              suas recorrências de uma só vez. Essa ação{" "}
+              <strong className="text-gray-900">não pode ser desfeita</strong>.
             </p>
-            
-            <div className="flex flex-col gap-3">
-              <button 
-                onClick={executeDeleteAll} 
-                className="w-full py-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-lg transition-all text-lg"
+
+            <div className="flex flex-col gap-2.5">
+              <button
+                type="button"
+                onClick={executeDeleteAll}
+                className="w-full py-3 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl shadow-md transition-all text-sm cursor-pointer"
               >
                 Sim, apagar tudo
               </button>
-              <button 
-                onClick={() => setIsDeleteAllModalOpen(false)} 
-                className="w-full py-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-all"
+              <button
+                type="button"
+                onClick={() => setIsDeleteAllModalOpen(false)}
+                className="w-full py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-all text-sm cursor-pointer"
               >
                 Cancelar e voltar
               </button>
             </div>
-
           </div>
         </div>
       )}
-
     </div>
   );
 }

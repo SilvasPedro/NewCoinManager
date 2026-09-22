@@ -2,6 +2,7 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import Sidebar from "../components/Sidebar";
+import MobileQuickActions from "../components/navigation/MobileQuickActions";
 import { db } from "../config/firebase";
 import { 
   collection, query, where, getDocs, 
@@ -137,18 +138,16 @@ export default function Configuracoes() {
     <div className="flex h-screen bg-gray-50 overflow-hidden">
       <Sidebar mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />
 
-      <main className="flex-1 overflow-y-auto p-4 md:p-8 relative">
+      <main className="flex-1 overflow-y-auto p-4 md:p-8 pb-28 lg:pb-8 relative">
         <div className="max-w-4xl mx-auto space-y-8">
           
-          <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white md:bg-transparent p-4 md:p-0 rounded-2xl md:rounded-none shadow-sm md:shadow-none border md:border-none border-gray-200">
-            <div className="flex items-center gap-4">
-              <button onClick={() => setMobileOpen(true)} className="md:hidden p-2 text-gray-600 bg-gray-100 rounded-lg">
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
-              </button>
+          <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white/70 backdrop-blur-md p-4 sm:p-5 rounded-2xl border border-white/60 shadow-xs">
+            <div className="flex items-center justify-between gap-4 w-full md:w-auto">
               <div>
                 <h2 className="text-2xl md:text-3xl font-extrabold text-gray-900 tracking-tight">Configurações</h2>
                 <p className="text-gray-500 mt-1 text-sm">Gerencie seu perfil e suas preferências.</p>
               </div>
+              <MobileQuickActions onOpenProfile={() => setMobileOpen(true)} />
             </div>
           </header>
 

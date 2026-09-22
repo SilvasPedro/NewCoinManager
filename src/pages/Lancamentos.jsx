@@ -3,11 +3,25 @@ import { useState, useEffect, useMemo } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import Sidebar from "../components/Sidebar";
 import { db } from "../config/firebase";
-import { 
-  collection, query, where, getDocs, 
-  addDoc, updateDoc, deleteDoc, doc 
+import {
+  collection,
+  query,
+  where,
+  getDocs,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
 } from "firebase/firestore";
-import toast from "react-hot-toast"; // NOVO: Importação do Toast
+import toast from "react-hot-toast";
+
+import LancamentosHeader from "../components/lancamentos/LancamentosHeader";
+import LancamentosSummaryCards from "../components/lancamentos/LancamentosSummaryCards";
+import LancamentosFilterBar from "../components/lancamentos/LancamentosFilterBar";
+import LancamentosTableView from "../components/lancamentos/LancamentosTableView";
+import LancamentosGridView from "../components/lancamentos/LancamentosGridView";
+import LancamentosCategoryGroupView from "../components/lancamentos/LancamentosCategoryGroupView";
+import LancamentoModal from "../components/lancamentos/LancamentoModal";
 
 const CATEGORIAS_PADRAO = [
   "Alimentação",
@@ -16,152 +30,263 @@ const CATEGORIAS_PADRAO = [
   "Moradia",
   "Saúde",
   "Transporte",
-  "Outros"
+  "Outros",
 ];
 
 export default function Lancamentos() {
   const { user } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
-  
+
   const [transacoes, setTransacoes] = useState([]);
-  const [categoriasUser, setCategoriasUser] = useState([]); 
+  const [categoriasUser, setCategoriasUser] = useState([]);
   const [loading, setLoading] = useState(true);
-  
+
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const dataAtual = new Date();
     return `${dataAtual.getFullYear()}-${String(dataAtual.getMonth() + 1).padStart(2, "0")}`;
   });
 
+  // Filtros e ordenação
   const [searchTerm, setSearchTerm] = useState("");
-  const [filterType, setFilterType] = useState("all");
+  const [filterType, setFilterType] = useState("all"); // 'all' | 'entrada' | 'saida' | 'recorrente'
+  const [filterStatus, setFilterStatus] = useState("all"); // 'all' | 'pago' | 'pendente'
   const [filterCategory, setFilterCategory] = useState("all");
+  const [sortBy, setSortBy] = useState("data-desc"); // 'data-desc' | 'data-asc' | 'valor-desc' | 'valor-asc' | 'nome-asc'
+
+  // Modos de visualização: 'tabela' | 'cards' | 'categorias' | 'pendentes'
+  const [viewMode, setViewMode] = useState("tabela");
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  
-  // NOVO: Estado para o Modal de Exclusão
   const [itemToDelete, setItemToDelete] = useState(null);
-  
+
   const [formData, setFormData] = useState({
     descricao: "",
     valor: "",
     tipo: "saida",
-    categoria: "", 
+    categoria: "",
     pago: false,
-    referencia: selectedMonth
+    referencia: selectedMonth,
   });
 
   const formatCurrency = (value) => {
-    return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
+    return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value || 0);
   };
 
-  const fetchCategorias = async () => {
-    if (!user?.uid) return;
-    try {
-      const q = query(collection(db, "categorias"), where("uid", "==", user.uid));
-      const snap = await getDocs(q);
-      const cats = [];
-      snap.forEach(doc => cats.push(doc.data().nome));
-      setCategoriasUser(cats.sort());
-    } catch (error) {
-      console.error("Erro ao buscar categorias:", error);
-    }
-  };
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  const fetchTransacoes = async () => {
-    if (!user?.uid) return;
-    try {
-      setLoading(true);
-      
-      const qFinancas = query(
-        collection(db, "financas"), 
-        where("uid", "==", user.uid),
-        where("referencia", "==", selectedMonth)
-      );
-      
-      const qRecorrencias = query(
-        collection(db, "recorrencias"), 
-        where("uid", "==", user.uid)
-      );
+  useEffect(() => {
+    let isMounted = true;
+    async function loadData() {
+      if (!user?.uid) return;
+      try {
+        setLoading(true);
 
-      const [snapFinancas, snapRecorrencias] = await Promise.all([
-        getDocs(qFinancas),
-        getDocs(qRecorrencias)
-      ]);
+        // Buscar categorias personalizadas
+        const qCat = query(collection(db, "categorias"), where("uid", "==", user.uid));
+        const snapCat = await getDocs(qCat);
+        const cats = [];
+        snapCat.forEach((d) => cats.push(d.data().nome));
+        if (isMounted) setCategoriasUser(cats.sort());
 
-      const dados = [];
-      
-      snapFinancas.forEach((doc) => {
-        dados.push({ id: doc.id, ...doc.data() });
-      });
+        // Buscar finanças e recorrências
+        const qFinancas = query(
+          collection(db, "financas"),
+          where("uid", "==", user.uid),
+          where("referencia", "==", selectedMonth)
+        );
 
-      const [selYear, selMonth] = selectedMonth.split("-").map(Number);
+        const qRecorrencias = query(collection(db, "recorrencias"), where("uid", "==", user.uid));
 
-      snapRecorrencias.forEach((doc) => {
-        const item = doc.data();
-        if (!item.dataInicio) return;
-        
-        const [startYear, startMonth] = item.dataInicio.split("-").map(Number);
-        const monthDiff = (selYear - startYear) * 12 + (selMonth - startMonth);
+        const [snapFinancas, snapRecorrencias] = await Promise.all([
+          getDocs(qFinancas),
+          getDocs(qRecorrencias),
+        ]);
 
-        if (monthDiff < 0) return; 
+        const dados = [];
 
-        if (item.tipo === "fixa") {
-          dados.push({
-            id: `rec-${doc.id}`, 
-            descricao: item.descricao,
-            valor: item.valor,
-            tipo: item.tipoTransacao || "saida", 
-            categoria: item.categoria,
-            isRecorrente: true, 
-            criadoEm: item.criadoEm || Date.now()
-          });
-        } else if (item.tipo === "parcelada") {
-          const parcelaDesteMes = item.parcelaAtual + monthDiff;
-          if (parcelaDesteMes <= item.parcelasTotais) {
+        snapFinancas.forEach((docSnap) => {
+          dados.push({ id: docSnap.id, ...docSnap.data() });
+        });
+
+        const [selYear, selMonth] = selectedMonth.split("-").map(Number);
+
+        snapRecorrencias.forEach((docSnap) => {
+          const item = docSnap.data();
+          if (!item.dataInicio) return;
+
+          const [startYear, startMonth] = item.dataInicio.split("-").map(Number);
+          const monthDiff = (selYear - startYear) * 12 + (selMonth - startMonth);
+
+          if (monthDiff < 0) return;
+
+          if (item.tipo === "fixa") {
             dados.push({
-              id: `rec-${doc.id}`,
-              descricao: `${item.descricao} (${parcelaDesteMes}/${item.parcelasTotais})`,
+              id: `rec-${docSnap.id}`,
+              descricao: item.descricao,
               valor: item.valor,
               tipo: item.tipoTransacao || "saida",
               categoria: item.categoria,
               isRecorrente: true,
-              criadoEm: item.criadoEm || Date.now()
+              criadoEm: item.criadoEm || Date.now(),
             });
+          } else if (item.tipo === "parcelada") {
+            const parcelaDesteMes = item.parcelaAtual + monthDiff;
+            if (parcelaDesteMes <= item.parcelasTotais) {
+              dados.push({
+                id: `rec-${docSnap.id}`,
+                descricao: `${item.descricao} (${parcelaDesteMes}/${item.parcelasTotais})`,
+                valor: item.valor,
+                tipo: item.tipoTransacao || "saida",
+                categoria: item.categoria,
+                isRecorrente: true,
+                criadoEm: item.criadoEm || Date.now(),
+              });
+            }
+          }
+        });
+
+        if (isMounted) setTransacoes(dados);
+      } catch (error) {
+        console.error("Erro ao carregar dados de lançamentos:", error);
+        toast.error("Falha ao carregar lançamentos.");
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
+
+    loadData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user, selectedMonth, refreshKey]);
+
+  // Lista de todas as categorias únicas disponíveis no mês
+  const availableCategories = useMemo(() => {
+    const cats = new Set(CATEGORIAS_PADRAO);
+    categoriasUser.forEach((c) => cats.add(c));
+    transacoes.forEach((t) => {
+      if (t.categoria) cats.add(t.categoria);
+    });
+    return Array.from(cats).sort();
+  }, [categoriasUser, transacoes]);
+
+  // Totais resumidos do período (Cards Pertinentes)
+  const summaryMetrics = useMemo(() => {
+    let receitasTotal = 0;
+    let despesasTotal = 0;
+    let despesasPendentes = 0;
+    let qtdPendentes = 0;
+    let qtdPagos = 0;
+
+    transacoes.forEach((t) => {
+      const isMeta =
+        t.categoria === "Metas" ||
+        t.descricao?.includes("Resgate:") ||
+        t.descricao?.includes("Investimento:");
+
+      if (t.tipo === "entrada") {
+        receitasTotal += t.valor || 0;
+      } else if (t.tipo === "saida") {
+        despesasTotal += t.valor || 0;
+        if (!t.isRecorrente && !isMeta) {
+          if (t.pago) {
+            qtdPagos++;
+          } else {
+            qtdPendentes++;
+            despesasPendentes += t.valor || 0;
           }
         }
-      });
+      }
+    });
 
-      dados.sort((a, b) => b.criadoEm - a.criadoEm);
-      setTransacoes(dados);
-    } catch (error) {
-      console.error("Erro ao buscar transações:", error);
-      toast.error("Falha ao carregar os lançamentos.");
-    } finally {
-      setLoading(false);
-    }
+    const saldoTotal = receitasTotal - despesasTotal;
+
+    return {
+      receitasTotal,
+      despesasTotal,
+      saldoTotal,
+      despesasPendentes,
+      qtdPendentes,
+      qtdPagos,
+    };
+  }, [transacoes]);
+
+  // Filtragem e ordenação dos lançamentos
+  const filteredAndSortedTransacoes = useMemo(() => {
+    let result = transacoes.filter((t) => {
+      // Se estiver no modo 'pendentes', força apenas despesas não pagas
+      if (viewMode === "pendentes") {
+        if (t.tipo !== "saida" || t.pago === true || t.isRecorrente) return false;
+      }
+
+      // Filtro de Busca
+      if (searchTerm.trim() !== "") {
+        const term = searchTerm.toLowerCase();
+        const matchDesc = t.descricao?.toLowerCase().includes(term);
+        const matchCat = t.categoria?.toLowerCase().includes(term);
+        if (!matchDesc && !matchCat) return false;
+      }
+
+      // Filtro de Tipo
+      if (filterType === "entrada" && t.tipo !== "entrada") return false;
+      if (filterType === "saida" && t.tipo !== "saida") return false;
+      if (filterType === "recorrente" && !t.isRecorrente) return false;
+
+      // Filtro de Status
+      if (viewMode !== "pendentes") {
+        if (filterStatus === "pago" && (t.tipo !== "saida" || !t.pago)) return false;
+        if (filterStatus === "pendente" && (t.tipo !== "saida" || t.pago)) return false;
+      }
+
+      // Filtro de Categoria
+      if (
+        filterCategory !== "all" &&
+        t.categoria?.toLowerCase() !== filterCategory.toLowerCase()
+      ) {
+        return false;
+      }
+
+      return true;
+    });
+
+    // Ordenação
+    result.sort((a, b) => {
+      if (sortBy === "data-desc") return (b.criadoEm || 0) - (a.criadoEm || 0);
+      if (sortBy === "data-asc") return (a.criadoEm || 0) - (b.criadoEm || 0);
+      if (sortBy === "valor-desc") return (b.valor || 0) - (a.valor || 0);
+      if (sortBy === "valor-asc") return (a.valor || 0) - (b.valor || 0);
+      if (sortBy === "nome-asc") return (a.descricao || "").localeCompare(b.descricao || "");
+      return 0;
+    });
+
+    return result;
+  }, [transacoes, viewMode, searchTerm, filterType, filterStatus, filterCategory, sortBy]);
+
+  const hasActiveFilters =
+    searchTerm.trim() !== "" ||
+    filterType !== "all" ||
+    (viewMode !== "pendentes" && filterStatus !== "all") ||
+    filterCategory !== "all";
+
+  const handleResetFilters = () => {
+    setSearchTerm("");
+    setFilterType("all");
+    setFilterStatus("all");
+    setFilterCategory("all");
+    setSortBy("data-desc");
   };
 
-  useEffect(() => {
-    fetchCategorias();
-    fetchTransacoes();
-    setFormData(prev => ({ ...prev, referencia: selectedMonth }));
-  }, [user, selectedMonth]);
-
-  const filteredTransacoes = useMemo(() => {
-    return transacoes.filter((t) => {
-      const matchesSearch = 
-        t.descricao.toLowerCase().includes(searchTerm.toLowerCase()) || 
-        t.categoria.toLowerCase().includes(searchTerm.toLowerCase());
-      const matchesType = filterType === "all" || t.tipo === filterType;
-      const matchesCategory = filterCategory === "all" || t.categoria.toLowerCase() === filterCategory.toLowerCase();
-
-      return matchesSearch && matchesType && matchesCategory;
-    });
-  }, [transacoes, searchTerm, filterType, filterCategory]);
-
   const handleOpenAdd = () => {
-    setFormData({ descricao: "", valor: "", tipo: "saida", categoria: "", pago: false, referencia: selectedMonth });
+    setFormData({
+      descricao: "",
+      valor: "",
+      tipo: "saida",
+      categoria: "",
+      pago: false,
+      referencia: selectedMonth,
+    });
     setEditingId(null);
     setIsModalOpen(true);
   };
@@ -173,7 +298,7 @@ export default function Lancamentos() {
       tipo: t.tipo,
       categoria: t.categoria,
       pago: t.pago || false,
-      referencia: t.referencia
+      referencia: t.referencia || selectedMonth,
     });
     setEditingId(t.id);
     setIsModalOpen(true);
@@ -190,450 +315,210 @@ export default function Lancamentos() {
 
       if (editingId) {
         await updateDoc(doc(db, "financas", editingId), dataToSave);
-        toast.success("Lançamento atualizado!"); // NOVO
+        toast.success("Lançamento atualizado com sucesso!");
       } else {
         dataToSave.criadoEm = Date.now();
         await addDoc(collection(db, "financas"), dataToSave);
-        toast.success("Lançamento adicionado!"); // NOVO
+        toast.success("Lançamento adicionado!");
       }
-      
+
       setIsModalOpen(false);
-      fetchTransacoes();
+      setRefreshKey((k) => k + 1);
     } catch (error) {
       console.error("Erro ao salvar:", error);
-      toast.error("Erro ao salvar o lançamento."); // NOVO
+      toast.error("Erro ao salvar o lançamento.");
     }
   };
 
-  // NOVO: Função que abre o modal de exclusão
   const confirmDelete = (id) => {
     setItemToDelete(id);
   };
 
-  // NOVO: Função que efetivamente deleta (chamada pelo modal de exclusão)
   const executeDelete = async () => {
     if (!itemToDelete) return;
     try {
       await deleteDoc(doc(db, "financas", itemToDelete));
       toast.success("Lançamento excluído!");
-      fetchTransacoes();
+      setRefreshKey((k) => k + 1);
     } catch (error) {
       console.error("Erro ao deletar:", error);
       toast.error("Erro ao excluir o lançamento.");
     } finally {
-      setItemToDelete(null); // Fecha o modal
+      setItemToDelete(null);
     }
   };
 
   const togglePago = async (id, currentStatus) => {
     try {
-      setTransacoes(transacoes.map(t => t.id === id ? { ...t, pago: !currentStatus } : t));
+      setTransacoes((prev) =>
+        prev.map((t) => (t.id === id ? { ...t, pago: !currentStatus } : t))
+      );
       await updateDoc(doc(db, "financas", id), { pago: !currentStatus });
-      toast.success(currentStatus ? "Marcado como pendente." : "Marcado como pago!"); // NOVO
+      toast.success(currentStatus ? "Marcado como pendente." : "Marcado como pago!");
     } catch (error) {
       console.error("Erro ao atualizar status:", error);
-      fetchTransacoes();
-      toast.error("Falha ao alterar o status."); // NOVO
+      setRefreshKey((k) => k + 1);
+      toast.error("Falha ao alterar status de pagamento.");
     }
   };
 
   const categoriasPersonalizadas = categoriasUser.filter(
-    catUser => !CATEGORIAS_PADRAO.map(c => c.toLowerCase()).includes(catUser.toLowerCase())
+    (catUser) => !CATEGORIAS_PADRAO.map((c) => c.toLowerCase()).includes(catUser.toLowerCase())
   );
 
   return (
-    <div className="flex h-screen bg-gray-50 overflow-hidden">
+    <div className="flex h-screen bg-slate-100/60 overflow-hidden">
       <Sidebar mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />
 
-      <main className="flex-1 overflow-y-auto p-4 md:p-8 relative">
-        <div className="max-w-7xl mx-auto space-y-6">
-          
-          <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white md:bg-transparent p-4 md:p-0 rounded-2xl md:rounded-none shadow-sm md:shadow-none border md:border-none border-gray-200">
-            <div className="flex items-center gap-4">
-              <button onClick={() => setMobileOpen(true)} className="md:hidden p-2 text-gray-600 bg-gray-100 rounded-lg">
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
-              </button>
-              <div>
-                <h2 className="text-2xl md:text-3xl font-extrabold text-gray-900 tracking-tight">Lançamentos</h2>
-                <p className="text-gray-500 mt-1 text-sm">Gerencie suas receitas e despesas.</p>
-              </div>
+      <main className="flex-1 overflow-y-auto p-3.5 sm:p-6 md:p-8 pb-28 lg:pb-8">
+        <div className="max-w-7xl mx-auto space-y-6 sm:space-y-7 pb-8">
+          {/* Header com Navegador de Mês touch-friendly e Botão de Vidro */}
+          <LancamentosHeader
+            selectedMonth={selectedMonth}
+            setSelectedMonth={setSelectedMonth}
+            onOpenAdd={handleOpenAdd}
+            onOpenMobileMenu={() => setMobileOpen(true)}
+          />
+
+          {/* Cards Pertinentes com Efeito de Vidro (Frosted & Dark Glass) */}
+          <LancamentosSummaryCards
+            receitasTotal={summaryMetrics.receitasTotal}
+            despesasTotal={summaryMetrics.despesasTotal}
+            saldoTotal={summaryMetrics.saldoTotal}
+            despesasPendentes={summaryMetrics.despesasPendentes}
+            qtdPendentes={summaryMetrics.qtdPendentes}
+            qtdPagos={summaryMetrics.qtdPagos}
+            formatCurrency={formatCurrency}
+          />
+
+          {/* Barra de Filtros e Alternância de Visualizações (Tabs de Vidro) */}
+          <LancamentosFilterBar
+            searchTerm={searchTerm}
+            setSearchTerm={setSearchTerm}
+            filterType={filterType}
+            setFilterType={setFilterType}
+            filterStatus={filterStatus}
+            setFilterStatus={setFilterStatus}
+            filterCategory={filterCategory}
+            setFilterCategory={setFilterCategory}
+            sortBy={sortBy}
+            setSortBy={setSortBy}
+            viewMode={viewMode}
+            setViewMode={setViewMode}
+            availableCategories={availableCategories}
+            onResetFilters={handleResetFilters}
+            hasActiveFilters={hasActiveFilters}
+            totalResultsCount={filteredAndSortedTransacoes.length}
+          />
+
+          {/* Área de Visualizações */}
+          {loading ? (
+            <div className="bg-white/80 backdrop-blur-md rounded-2xl border border-gray-200/80 p-12 text-center flex flex-col items-center justify-center shadow-xs">
+              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-900 mb-3"></div>
+              <p className="text-xs font-semibold text-gray-500">
+                Carregando lançamentos...
+              </p>
             </div>
+          ) : (
+            <>
+              {/* Visualização 1: Tabela / Lista detalhada ou Pendentes */}
+              {(viewMode === "tabela" || viewMode === "pendentes") && (
+                <LancamentosTableView
+                  transacoes={filteredAndSortedTransacoes}
+                  togglePago={togglePago}
+                  handleOpenEdit={handleOpenEdit}
+                  confirmDelete={confirmDelete}
+                  formatCurrency={formatCurrency}
+                  onResetFilters={handleResetFilters}
+                  onOpenAdd={handleOpenAdd}
+                  selectedMonth={selectedMonth}
+                  hasActiveFilters={hasActiveFilters}
+                />
+              )}
 
-            <div className="flex flex-col sm:flex-row items-center gap-3">
-              <input 
-                type="month" 
-                value={selectedMonth}
-                onChange={(e) => setSelectedMonth(e.target.value)}
-                className="w-full sm:w-auto px-4 py-2 text-gray-900 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 font-bold"
-              />
-              <button 
-                onClick={handleOpenAdd}
-                className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-2.5 bg-blue-950 hover:bg-black text-white font-semibold rounded-xl transition-all shadow-md hover:shadow-lg"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/></svg>
-                Novo Lançamento
-              </button>
-            </div>
-          </header>
+              {/* Visualização 2: Grid de Cards Bento */}
+              {viewMode === "cards" && (
+                <LancamentosGridView
+                  transacoes={filteredAndSortedTransacoes}
+                  togglePago={togglePago}
+                  handleOpenEdit={handleOpenEdit}
+                  confirmDelete={confirmDelete}
+                  formatCurrency={formatCurrency}
+                  onResetFilters={handleResetFilters}
+                  onOpenAdd={handleOpenAdd}
+                  selectedMonth={selectedMonth}
+                  hasActiveFilters={hasActiveFilters}
+                />
+              )}
 
-          <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-200 flex flex-col md:flex-row gap-4 items-center">
-            
-            <div className="relative w-full md:flex-1">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-              </div>
-              <input 
-                type="text" 
-                placeholder="Pesquisar lançamento..." 
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm"
-              />
-            </div>
-
-            <div className="flex flex-col sm:flex-row w-full md:w-auto gap-4">
-              <select 
-                value={filterType} 
-                onChange={(e) => setFilterType(e.target.value)}
-                className="w-full sm:w-40 px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm font-medium"
-              >
-                <option value="all">Todos os Tipos</option>
-                <option value="entrada">Receitas</option>
-                <option value="saida">Despesas</option>
-              </select>
-
-              <select 
-                value={filterCategory} 
-                onChange={(e) => setFilterCategory(e.target.value)}
-                className="w-full sm:w-48 px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm font-medium capitalize"
-              >
-                <option value="all">Todas Categorias</option>
-                <optgroup label="Básicas">
-                  {CATEGORIAS_PADRAO.map(cat => <option key={cat} value={cat}>{cat}</option>)}
-                </optgroup>
-                {categoriasPersonalizadas.length > 0 && (
-                  <optgroup label="Minhas Categorias">
-                    {categoriasPersonalizadas.map((cat, idx) => <option key={`f-cat-${idx}`} value={cat}>{cat}</option>)}
-                  </optgroup>
-                )}
-              </select>
-            </div>
-
-          </div>
-
-          <div className="bg-white md:rounded-2xl shadow-sm border border-gray-200 overflow-hidden md:bg-white bg-transparent md:border-solid border-none md:shadow-sm shadow-none">
-            {loading ? (
-              <div className="p-10 text-center text-gray-500 bg-white rounded-2xl">Carregando dados...</div>
-            ) : transacoes.length === 0 ? (
-              <div className="p-16 text-center flex flex-col items-center justify-center bg-white rounded-2xl">
-                 <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4 text-gray-400">
-                   <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                 </div>
-                 <p className="text-gray-500 font-medium">Nenhum lançamento encontrado em {selectedMonth}.</p>
-                 <button onClick={handleOpenAdd} className="mt-4 text-blue-600 font-semibold hover:underline">Adicionar o primeiro</button>
-              </div>
-            ) : filteredTransacoes.length === 0 ? (
-              <div className="p-16 text-center flex flex-col items-center justify-center bg-white rounded-2xl">
-                 <p className="text-gray-500 font-medium">Nenhum lançamento encontrado com os filtros atuais.</p>
-                 <button 
-                   onClick={() => { setSearchTerm(""); setFilterType("all"); setFilterCategory("all"); }} 
-                   className="mt-4 text-blue-600 font-semibold hover:underline"
-                 >
-                   Limpar Filtros
-                 </button>
-              </div>
-            ) : (
-              <>
-                {/* --- LAYOUT DESKTOP (Tabela) --- */}
-                <div className="hidden md:block overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="bg-gray-50 border-b border-gray-200 text-xs uppercase tracking-wider text-gray-500 font-semibold">
-                        <th className="p-4">Descrição</th>
-                        <th className="p-4">Categoria</th>
-                        <th className="p-4">Valor</th>
-                        <th className="p-4 text-center">Status</th>
-                        <th className="p-4 text-right">Ações</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100 text-sm">
-                      {filteredTransacoes.map((t) => (
-                        <tr key={t.id} className="hover:bg-gray-50/50 transition-colors">
-                          <td className="p-4">
-                            <p className="font-bold text-gray-900 capitalize flex items-center gap-2">
-                              {t.descricao}
-                              {t.isRecorrente && (
-                                <span className="px-2 py-0.5 bg-blue-100 text-blue-800 text-[10px] uppercase font-bold rounded-md border border-blue-200">
-                                  Recorrente
-                                </span>
-                              )}
-                            </p>
-                          </td>
-                          <td className="p-4 capitalize text-gray-600 font-medium">
-                            {t.categoria}
-                          </td>
-                          <td className="p-4 font-bold">
-                            <span className={t.tipo === "entrada" ? "text-green-600" : "text-gray-900"}>
-                              {t.tipo === "entrada" ? "+ " : "- "}
-                              {formatCurrency(t.valor)}
-                            </span>
-                          </td>
-                          <td className="p-4 text-center">
-                            {t.isRecorrente ? (
-                              <span className="px-3 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                                Automático
-                              </span>
-                            ) : t.tipo === "saida" ? (
-                              <button 
-                                onClick={() => togglePago(t.id, t.pago)}
-                                className={`px-3 py-1 rounded-full text-xs font-bold inline-flex items-center gap-1.5 transition-colors border ${
-                                  t.pago 
-                                  ? "bg-green-50 text-green-700 border-green-200 hover:bg-green-100" 
-                                  : "bg-red-50 text-red-700 border-red-200 hover:bg-red-100"
-                                }`}
-                              >
-                                <div className={`w-1.5 h-1.5 rounded-full ${t.pago ? "bg-green-500" : "bg-red-500"}`}></div>
-                                {t.pago ? "Pago" : "Pendente"}
-                              </button>
-                            ) : (
-                              <span className="px-3 py-1 rounded-full text-xs font-bold bg-gray-100 text-gray-500 border border-gray-200">
-                                Receita
-                              </span>
-                            )}
-                          </td>
-                          <td className="p-4 text-right">
-                            {t.isRecorrente ? (
-                              <span className="text-xs text-gray-400 font-medium">Editar em Recorrências</span>
-                            ) : (
-                              <div className="space-x-2">
-                                <button onClick={() => handleOpenEdit(t)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Editar">
-                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
-                                </button>
-                                {/* NOVO: Chama a função confirmDelete em vez do delete direto */}
-                                <button onClick={() => confirmDelete(t.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Excluir">
-                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                                </button>
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* --- LAYOUT MOBILE (Cards) --- */}
-                <div className="md:hidden flex flex-col gap-3 pb-4">
-                  {filteredTransacoes.map((t) => (
-                    <div key={t.id} className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm flex flex-col gap-3">
-                      <div className="flex justify-between items-start gap-2">
-                        <div className="flex-1">
-                          <p className="font-bold text-gray-900 capitalize flex flex-wrap items-center gap-2 text-base leading-tight">
-                            {t.descricao}
-                            {t.isRecorrente && (
-                              <span className="px-2 py-0.5 bg-blue-100 text-blue-800 text-[10px] uppercase font-bold rounded-md border border-blue-200 shrink-0">
-                                Recorrente
-                              </span>
-                            )}
-                          </p>
-                          <p className="text-xs text-gray-500 capitalize mt-1.5 font-medium">{t.categoria}</p>
-                        </div>
-                        <div className="text-right shrink-0 mt-0.5">
-                          <p className={`text-lg font-extrabold ${t.tipo === "entrada" ? "text-green-600" : "text-gray-900"}`}>
-                            {t.tipo === "entrada" ? "+ " : "- "}
-                            {formatCurrency(t.valor)}
-                          </p>
-                        </div>
-                      </div>
-                      
-                      <div className="flex items-center justify-between pt-3 border-t border-gray-100 mt-1">
-                        <div>
-                          {t.isRecorrente ? (
-                            <span className="px-3 py-1.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                              Automático
-                            </span>
-                          ) : t.tipo === "saida" ? (
-                            <button 
-                              onClick={() => togglePago(t.id, t.pago)}
-                              className={`px-3 py-1.5 rounded-full text-[11px] font-bold inline-flex items-center gap-1.5 transition-colors border ${
-                                t.pago 
-                                ? "bg-green-50 text-green-700 border-green-200 active:bg-green-100" 
-                                : "bg-red-50 text-red-700 border-red-200 active:bg-red-100"
-                              }`}
-                            >
-                              <div className={`w-1.5 h-1.5 rounded-full ${t.pago ? "bg-green-500" : "bg-red-500"}`}></div>
-                              {t.pago ? "Pago" : "Pendente"}
-                            </button>
-                          ) : (
-                            <span className="px-3 py-1.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600 border border-gray-200">
-                              Receita
-                            </span>
-                          )}
-                        </div>
-                        
-                        <div>
-                          {t.isRecorrente ? (
-                            <span className="text-[11px] text-gray-400 font-medium italic">Edite em Recorrências</span>
-                          ) : (
-                            <div className="flex gap-2">
-                              <button onClick={() => handleOpenEdit(t)} className="p-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors" title="Editar">
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
-                              </button>
-                              {/* NOVO: Chama a função confirmDelete em vez do delete direto */}
-                              <button onClick={() => confirmDelete(t.id)} className="p-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors" title="Excluir">
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-
+              {/* Visualização 3: Agrupado por Categoria */}
+              {viewMode === "categorias" && (
+                <LancamentosCategoryGroupView
+                  transacoes={filteredAndSortedTransacoes}
+                  togglePago={togglePago}
+                  handleOpenEdit={handleOpenEdit}
+                  confirmDelete={confirmDelete}
+                  formatCurrency={formatCurrency}
+                  onResetFilters={handleResetFilters}
+                  onOpenAdd={handleOpenAdd}
+                  hasActiveFilters={hasActiveFilters}
+                />
+              )}
+            </>
+          )}
         </div>
       </main>
 
-      {/* MODAL DE ADICIONAR / EDITAR */}
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-gray-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all">
-            
-            <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-              <h3 className="text-xl font-bold text-gray-900">
-                {editingId ? "Editar Lançamento" : "Novo Lançamento"}
-              </h3>
-              <button onClick={() => setIsModalOpen(false)} className="text-gray-400 hover:text-gray-700 bg-white p-1 rounded-full shadow-sm">
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
-              </button>
-            </div>
+      {/* MODAL DE ADICIONAR / EDITAR COM SELETOR DE CATEGORIAS AVANÇADO */}
+      <LancamentoModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        formData={formData}
+        setFormData={setFormData}
+        editingId={editingId}
+        onSubmit={handleSubmit}
+        categoriasPersonalizadas={categoriasPersonalizadas}
+      />
 
-            <form onSubmit={handleSubmit} className="p-6 space-y-5">
-              
-              <div className="flex gap-4 p-1 bg-gray-100 rounded-xl">
-                <label className={`flex-1 text-center py-2 rounded-lg cursor-pointer text-sm font-bold transition-colors ${formData.tipo === 'saida' ? 'bg-white text-red-600 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}>
-                  <input type="radio" name="tipo" className="hidden" checked={formData.tipo === 'saida'} onChange={() => setFormData({...formData, tipo: 'saida'})} />
-                  Despesa
-                </label>
-                <label className={`flex-1 text-center py-2 rounded-lg cursor-pointer text-sm font-bold transition-colors ${formData.tipo === 'entrada' ? 'bg-white text-green-600 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}>
-                  <input type="radio" name="tipo" className="hidden" checked={formData.tipo === 'entrada'} onChange={() => setFormData({...formData, tipo: 'entrada'})} />
-                  Receita
-                </label>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="col-span-2">
-                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Descrição</label>
-                  <input required type="text" value={formData.descricao} onChange={(e) => setFormData({...formData, descricao: e.target.value})} placeholder="Ex: Supermercado" className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all font-medium" />
-                </div>
-                
-                <div className="col-span-2 sm:col-span-1">
-                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Valor (R$)</label>
-                  <input required type="number" step="0.01" min="0.01" value={formData.valor} onChange={(e) => setFormData({...formData, valor: e.target.value})} placeholder="0,00" className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold text-gray-900" />
-                </div>
-
-                <div className="col-span-2 sm:col-span-1">
-                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Categoria</label>
-                  <select 
-                    required 
-                    value={formData.categoria} 
-                    onChange={(e) => setFormData({...formData, categoria: e.target.value})} 
-                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all font-medium capitalize"
-                  >
-                    <option value="" disabled>Selecione...</option>
-                    
-                    <optgroup label="Básicas">
-                      {CATEGORIAS_PADRAO.map(cat => (
-                        <option key={cat} value={cat.toLowerCase()}>{cat}</option>
-                      ))}
-                    </optgroup>
-
-                    {categoriasPersonalizadas.length > 0 && (
-                      <optgroup label="Minhas Categorias">
-                        {categoriasPersonalizadas.map((cat, idx) => (
-                          <option key={`user-${idx}`} value={cat.toLowerCase()}>{cat}</option>
-                        ))}
-                      </optgroup>
-                    )}
-
-                    {formData.categoria && 
-                     !CATEGORIAS_PADRAO.map(c => c.toLowerCase()).includes(formData.categoria.toLowerCase()) && 
-                     !categoriasUser.map(c => c.toLowerCase()).includes(formData.categoria.toLowerCase()) && (
-                       <optgroup label="Categoria Antiga (Inativa)">
-                         <option value={formData.categoria.toLowerCase()}>{formData.categoria}</option>
-                       </optgroup>
-                    )}
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between pt-2">
-                <div>
-                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Competência</label>
-                  <input required type="month" value={formData.referencia} onChange={(e) => setFormData({...formData, referencia: e.target.value})} className="px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-
-                {formData.tipo === 'saida' && (
-                  <label className="flex items-center gap-3 cursor-pointer mt-5">
-                    <div className="relative">
-                      <input type="checkbox" className="sr-only" checked={formData.pago} onChange={(e) => setFormData({...formData, pago: e.target.checked})} />
-                      <div className={`block w-12 h-7 rounded-full transition-colors ${formData.pago ? 'bg-green-500' : 'bg-gray-300'}`}></div>
-                      <div className={`absolute left-1 top-1 bg-white w-5 h-5 rounded-full transition-transform ${formData.pago ? 'transform translate-x-5' : ''}`}></div>
-                    </div>
-                    <span className="text-sm font-bold text-gray-700">{formData.pago ? 'Já foi pago' : 'Não pago'}</span>
-                  </label>
-                )}
-              </div>
-
-              <div className="pt-6 border-t border-gray-100">
-                <button type="submit" className="w-full py-3.5 bg-blue-950 hover:bg-black text-white font-bold rounded-xl shadow-lg hover:shadow-xl transition-all">
-                  {editingId ? "Salvar Alterações" : "Adicionar Lançamento"}
-                </button>
-              </div>
-
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* NOVO: MODAL DE CONFIRMAÇÃO DE EXCLUSÃO */}
+      {/* MODAL DE CONFIRMAÇÃO DE EXCLUSÃO COM BACKDROP BLUR */}
       {itemToDelete && (
-        <div className="fixed inset-0 bg-gray-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden transform transition-all p-6 text-center">
-            
-            <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4 text-red-600 border border-red-100">
-              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white/95 backdrop-blur-xl rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden transform transition-all p-6 text-center border border-white/60">
+            <div className="w-14 h-14 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-3 text-rose-600 border border-rose-100">
+              <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                />
               </svg>
             </div>
-            
-            <h3 className="text-xl font-bold text-gray-900 mb-2">Excluir Lançamento?</h3>
-            <p className="text-gray-500 text-sm mb-6">
-              Essa ação não pode ser desfeita. Tem certeza que deseja remover este item do seu orçamento?
+
+            <h3 className="text-lg font-bold text-gray-900 mb-1.5">Excluir Lançamento?</h3>
+            <p className="text-gray-500 text-xs mb-5">
+              Essa ação não pode ser desfeita. Tem certeza que deseja remover este item?
             </p>
-            
-            <div className="flex gap-3">
-              <button 
-                onClick={() => setItemToDelete(null)} 
-                className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-all"
+
+            <div className="flex gap-2.5">
+              <button
+                type="button"
+                onClick={() => setItemToDelete(null)}
+                className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-all text-xs cursor-pointer"
               >
                 Cancelar
               </button>
-              <button 
-                onClick={executeDelete} 
-                className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-lg transition-all"
+              <button
+                type="button"
+                onClick={executeDelete}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl shadow-md transition-all text-xs cursor-pointer"
               >
                 Sim, excluir
               </button>
             </div>
-
           </div>
         </div>
       )}
-
     </div>
   );
 }
